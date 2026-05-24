@@ -1,5 +1,6 @@
 import csv
 import random
+import time
 from datetime import datetime
 from playwright.sync_api import sync_playwright
 from config.settings import CSV_DIR
@@ -96,92 +97,152 @@ def _parse_tag_input(raw: str) -> list[str]:
 
 def _apply_tag_via_sidebar(page, display_name: str) -> bool:
     """
-    Use Steam's 'Narrow by Tag' sidebar to apply one tag filter interactively.
-    Types the display name into the sidebar input, waits for the list to filter,
-    then clicks the matching entry. Returns True on success.
+    Interactively apply one tag via Steam's 'Narrow by Tag' sidebar.
+    Prints a step-by-step trace so failures are immediately visible.
+    Returns True if the tag was successfully clicked.
     """
-    # Scroll sidebar into view — tag filter is below the genre checkboxes
-    page.mouse.wheel(0, 400)
-    delay(0.4, 0.8)
+    # ── 1. Scroll the sidebar into view ──────────────────────────────
+    print(f"    Scrolling sidebar into view...")
+    page.mouse.wheel(0, 500)
+    delay(0.5, 0.9)
 
-    # Locate the tag filter container (try multiple selectors Steam has used over time)
+    # ── 2. Find the tag filter container ─────────────────────────────
+    print(f"    Looking for tag filter container...", end=" ", flush=True)
     container = None
-    for sel in [
-        "#TagFilter_Container",
-        "[id*='TagFilter']",
-        "div.tag_filter_container",
-    ]:
+    container_sel = None
+    for sel in ["#TagFilter_Container", "[id*='TagFilter']", "div.tag_filter_container"]:
         loc = page.locator(sel)
         if loc.count() > 0:
-            container = loc.first
+            container    = loc.first
+            container_sel = sel
             break
 
     if container is None:
-        print(f"    '{display_name}': sidebar container not found — skipping.")
+        print("NOT FOUND")
+        # Dump every id= in the page so we can see what's actually there
+        ids = page.eval_on_selector_all("[id]", "els => els.map(e => e.id).filter(Boolean)")
+        sidebar_ids = [i for i in ids if any(k in i.lower() for k in ("tag", "filter", "narrow"))]
+        print(f"    Tag-related IDs on page: {sidebar_ids or '(none)'}")
         return False
+    print(f"found  →  {container_sel}")
 
     container.scroll_into_view_if_needed()
     delay(0.3, 0.5)
 
-    # Find the text input inside the container
-    tag_input = container.locator("input[type='text'], input:not([type])").first
-    has_input = tag_input.count() > 0
+    # ── 3. Find the text input ────────────────────────────────────────
+    print(f"    Looking for tag input...", end=" ", flush=True)
+    tag_input   = None
+    input_sel_used = None
+    for sel in ["input[type='text']", "input:not([type='hidden'])", "input"]:
+        loc = container.locator(sel)
+        if loc.count() > 0:
+            tag_input     = loc.first
+            input_sel_used = sel
+            break
 
-    if has_input:
-        move_to(page, tag_input)
-        delay(0.2, 0.4)
-        tag_input.click()
-        tag_input.fill("")
-        delay(0.1, 0.2)
-        for ch in display_name:
-            tag_input.type(ch, delay=random.randint(55, 120))
-        delay(0.9, 1.6)   # let the list filter
+    if tag_input is None:
+        print("NOT FOUND")
+        print(f"    Container inner HTML (first 400 chars): {container.inner_html()[:400]}")
+        return False
+    print(f"found  →  {input_sel_used}")
 
-    # Try to click a matching tag from the filtered list
-    # Steam renders tags as <a> or <label> elements; try both + generic text match
-    clicked = False
-    for strategy in [
-        lambda: container.locator("a").filter(has_text=display_name).first,
-        lambda: container.locator("label").filter(has_text=display_name).first,
-        lambda: container.get_by_text(display_name, exact=True).first,
-        lambda: container.get_by_text(display_name, exact=False).first,
-    ]:
-        try:
-            el = strategy()
-            if el.count() > 0 and el.is_visible(timeout=2000):
-                move_to(page, el)
-                delay(0.15, 0.35)
-                el.click()
-                clicked = True
-                break
-        except Exception:
-            continue
+    # ── 4. Wait for input to be visible and enabled ───────────────────
+    print(f"    Waiting for input to be interactable...", end=" ", flush=True)
+    try:
+        tag_input.wait_for(state="visible", timeout=5000)
+        print("ready")
+    except Exception as e:
+        print(f"TIMEOUT — {e}")
+        return False
 
-    if not clicked and has_input:
-        # Last resort: submit via Enter and accept whatever the first match is
-        try:
-            tag_input.press("Enter")
-            clicked = True
-        except Exception:
-            pass
+    # ── 5. Type the display name ──────────────────────────────────────
+    print(f"    Typing '{display_name}'...")
+    move_to(page, tag_input)
+    delay(0.2, 0.4)
+    tag_input.click()
+    tag_input.fill("")
+    delay(0.15, 0.25)
+    for ch in display_name:
+        tag_input.type(ch, delay=random.randint(55, 120))
 
-    if clicked:
-        # Wait for the results pane to update after applying the tag
-        try:
-            page.wait_for_load_state("networkidle", timeout=8000)
-        except Exception:
-            delay(1.5, 2.5)
+    # ── 6. Poll for suggestion items (up to 5 s) ─────────────────────
+    print(f"    Waiting for suggestion items (up to 5 s)...", end=" ", flush=True)
+    suggestion_el  = None
+    deadline       = 5.0
+    poll_start     = time.time()
+    suggestion_sels = [
+        f"a:has-text('{display_name}')",
+        f"label:has-text('{display_name}')",
+        f"div:has-text('{display_name}')",
+        f"span:has-text('{display_name}')",
+    ]
 
-        # Clear the input so it's ready for the next tag
-        if has_input:
+    while time.time() - poll_start < deadline:
+        for sel in suggestion_sels:
             try:
-                tag_input.fill("")
+                el = container.locator(sel).first
+                if el.count() > 0 and el.is_visible(timeout=300):
+                    suggestion_el = el
+                    break
             except Exception:
                 pass
-        return True
+        if suggestion_el is not None:
+            break
+        time.sleep(0.3)
 
-    print(f"    '{display_name}': no matching entry found in sidebar — skipping.")
-    return False
+    if suggestion_el is None:
+        elapsed = f"{time.time() - poll_start:.1f}s"
+        print(f"NONE appeared after {elapsed}")
+        # Dump container text so we know what Steam actually rendered
+        try:
+            visible = container.inner_text().strip().replace("\n", " | ")[:300]
+            print(f"    Container text: {visible}")
+        except Exception:
+            pass
+        return False
+
+    elapsed = f"{time.time() - poll_start:.1f}s"
+    print(f"found  ({elapsed})")
+
+    # ── 7. Click the suggestion ───────────────────────────────────────
+    print(f"    Clicking '{display_name}' tag...", end=" ", flush=True)
+    try:
+        move_to(page, suggestion_el)
+        delay(0.15, 0.35)
+        suggestion_el.click()
+        print("done")
+    except Exception as e:
+        print(f"FAILED — {e}")
+        return False
+
+    # ── 8. Wait for results pane to update ───────────────────────────
+    try:
+        page.wait_for_load_state("networkidle", timeout=8000)
+    except Exception:
+        delay(1.5, 2.5)
+
+    # Clear input ready for next tag
+    try:
+        tag_input.fill("")
+    except Exception:
+        pass
+
+    return True
+
+
+def _print_result_count(page) -> None:
+    """Print how many results Steam is showing before we start scraping."""
+    for sel in [".search_results_count", "#search_results_header"]:
+        loc = page.locator(sel)
+        if loc.count() > 0:
+            try:
+                print(f"  Steam result count: {loc.first.text_content().strip()}")
+                return
+            except Exception:
+                pass
+    # Fallback: count visible rows
+    count = page.locator("a.search_result_row").count()
+    print(f"  Visible result rows: {count}")
 
 
 def _has_results(page) -> bool:
@@ -401,7 +462,8 @@ def run() -> None:
                     print("  0 results after applying tags — try a broader filter.")
                     browser.close()
                     return
-                print("  Results confirmed. Starting scrape...")
+                _print_result_count(page)
+                print("  Results confirmed — starting scrape...")
 
         if "/app/" in url:
             results = _scrape_app(page, url)
