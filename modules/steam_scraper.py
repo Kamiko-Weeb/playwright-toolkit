@@ -1,111 +1,201 @@
 import csv
 import random
-import re
 from datetime import datetime
 from playwright.sync_api import sync_playwright
 from config.settings import CSV_DIR
-from modules.utils import new_context, move_to, smart_click, delay, parse_price, natural_move
+from modules.utils import new_context, move_to, smart_click, delay, parse_price
 
-DEFAULT_URL = "https://store.steampowered.com/search/?specials=1"
+# ndl=1 tells Steam not to filter by display language — required for full specials list
+DEFAULT_URL = "https://store.steampowered.com/search/?specials=1&ndl=1"
 
-# Steam internal tag IDs. Find more at store.steampowered.com/tag/browse/
-STEAM_TAGS: dict[str, int] = {
-    # ── Multiplayer / social ─────────────────────────────────────────
-    "multiplayer":              3,
-    "co-op":                    9,
-    "coop":                     9,
-    "singleplayer":          4182,
-    "pvp":                   4187,
-    "massively multiplayer":  128,
-    "local multiplayer":     7368,
-    "online co-op":          3843,
-
-    # ── Genre ────────────────────────────────────────────────────────
-    "action":                  19,
-    "adventure":               25,
-    "rpg":                    122,
-    "simulation":              28,
-    "sports":                 701,
-    "racing":                 699,
-    "horror":                  87,
-    "puzzle":                1664,
-    "platformer":            1625,
-    "fighting":               788,
-    "indie":                  492,
-    "casual":                 597,
-
-    # ── Sub-genre / play style ───────────────────────────────────────
-    "fps":                      1,
-    "shooter":               1746,
-    "open world":            1774,
-    "openworld":             1774,
-    "survival":              1656,
-    "roguelike":             1716,
-    "roguelite":             1716,
-    "sandbox":               3716,
-    "battle royale":         4231,
-    "br":                    4231,
-    "tower defense":         1757,
-    "turn-based":            1668,
-    "turn based":            1668,
-    "rts":                   1693,
-    "card game":             2048,
-    "cards":                 2048,
-    "stealth":               1695,
-    "strategy":              9,
-
-    # ── Theme / aesthetic ────────────────────────────────────────────
-    "anime":                 4085,
-    "cyberpunk":             3942,
-    "fantasy":               1684,
-    "sci-fi":                3839,
-    "scifi":                 3839,
-    "pixel art":             1890,
-    "2d":                    3871,
-    "visual novel":          1688,
-    "vn":                    1688,
-    "early access":           493,
+# Maps user's lowercase input → the display name Steam shows in its tag sidebar.
+# Steam's sidebar search is case-insensitive but matching the exact label is safest.
+TAG_DISPLAY_NAMES: dict[str, str] = {
+    # Multiplayer / social
+    "multiplayer":           "Multiplayer",
+    "singleplayer":          "Singleplayer",
+    "co-op":                 "Co-op",
+    "coop":                  "Co-op",
+    "pvp":                   "PvP",
+    "local multiplayer":     "Local Multiplayer",
+    "online co-op":          "Online Co-Op",
+    "massively multiplayer": "Massively Multiplayer",
+    "mmo":                   "Massively Multiplayer",
+    # Genre
+    "action":                "Action",
+    "adventure":             "Adventure",
+    "rpg":                   "RPG",
+    "simulation":            "Simulation",
+    "sports":                "Sports",
+    "racing":                "Racing",
+    "horror":                "Horror",
+    "puzzle":                "Puzzle",
+    "platformer":            "Platformer",
+    "fighting":              "Fighting",
+    "indie":                 "Indie",
+    "casual":                "Casual",
+    "strategy":              "Strategy",
+    # Sub-genre / play style
+    "fps":                   "FPS",
+    "shooter":               "Shooter",
+    "open world":            "Open World",
+    "openworld":             "Open World",
+    "survival":              "Survival",
+    "roguelike":             "Roguelike",
+    "roguelite":             "Roguelite",
+    "sandbox":               "Sandbox",
+    "battle royale":         "Battle Royale",
+    "br":                    "Battle Royale",
+    "tower defense":         "Tower Defense",
+    "turn-based":            "Turn-Based",
+    "turn based":            "Turn-Based",
+    "rts":                   "RTS",
+    "card game":             "Card Game",
+    "cards":                 "Card Game",
+    "stealth":               "Stealth",
+    "metroidvania":          "Metroidvania",
+    # Theme / aesthetic
+    "anime":                 "Anime",
+    "cyberpunk":             "Cyberpunk",
+    "fantasy":               "Fantasy",
+    "sci-fi":                "Sci-fi",
+    "scifi":                 "Sci-fi",
+    "pixel art":             "Pixel Art",
+    "2d":                    "2D",
+    "3d":                    "3D",
+    "visual novel":          "Visual Novel",
+    "vn":                    "Visual Novel",
+    "atmospheric":           "Atmospheric",
+    "story rich":            "Story Rich",
+    "early access":          "Early Access",
 }
 
 
-def _build_tag_url(base_url: str, tag_ids: list[str]) -> str:
-    """Inject tags=id1,id2,... into a Steam search URL, replacing any prior tags param."""
-    cleaned = re.sub(r"(&?tags=[^&]*)", "", base_url).rstrip("&").rstrip("?")
-    sep = "&" if "?" in cleaned else "?"
-    return f"{cleaned}{sep}tags={','.join(tag_ids)}"
-
-
-def _resolve_tags(raw_input: str) -> tuple[str, str]:
-    """
-    Parse the user's tag string into (active_tag_names, filter_url_fragment).
-    Returns (label, comma-joined IDs) — or ("", "") if nothing matched.
-    """
-    tokens = [t.strip().lower() for t in raw_input.split(",") if t.strip()]
-    matched: dict[str, int] = {}
+def _parse_tag_input(raw: str) -> list[str]:
+    """Convert comma-separated user input into a deduplicated list of Steam display names."""
+    tokens  = [t.strip().lower() for t in raw.split(",") if t.strip()]
+    result:  list[str] = []
     unknown: list[str] = []
+    seen:    set[str]  = set()
 
     for token in tokens:
-        if token in STEAM_TAGS:
-            matched[token] = STEAM_TAGS[token]
+        if token in TAG_DISPLAY_NAMES:
+            display = TAG_DISPLAY_NAMES[token]
+            if display not in seen:
+                result.append(display)
+                seen.add(display)
         else:
             unknown.append(token)
 
     if unknown:
-        print(f"  Unrecognized tag(s), skipped: {', '.join(unknown)}")
-        print(f"  Supported: {', '.join(sorted(STEAM_TAGS))}\n")
+        print(f"  Unrecognized tag(s), skipped : {', '.join(unknown)}")
+        print(f"  Supported: {', '.join(sorted(TAG_DISPLAY_NAMES))}\n")
 
-    if not matched:
-        return "", ""
+    return result
 
-    label   = ", ".join(matched.keys())
-    id_list = [str(v) for v in dict.fromkeys(matched.values())]  # dedup, preserve order
-    return label, ",".join(id_list)
+
+def _apply_tag_via_sidebar(page, display_name: str) -> bool:
+    """
+    Use Steam's 'Narrow by Tag' sidebar to apply one tag filter interactively.
+    Types the display name into the sidebar input, waits for the list to filter,
+    then clicks the matching entry. Returns True on success.
+    """
+    # Scroll sidebar into view — tag filter is below the genre checkboxes
+    page.mouse.wheel(0, 400)
+    delay(0.4, 0.8)
+
+    # Locate the tag filter container (try multiple selectors Steam has used over time)
+    container = None
+    for sel in [
+        "#TagFilter_Container",
+        "[id*='TagFilter']",
+        "div.tag_filter_container",
+    ]:
+        loc = page.locator(sel)
+        if loc.count() > 0:
+            container = loc.first
+            break
+
+    if container is None:
+        print(f"    '{display_name}': sidebar container not found — skipping.")
+        return False
+
+    container.scroll_into_view_if_needed()
+    delay(0.3, 0.5)
+
+    # Find the text input inside the container
+    tag_input = container.locator("input[type='text'], input:not([type])").first
+    has_input = tag_input.count() > 0
+
+    if has_input:
+        move_to(page, tag_input)
+        delay(0.2, 0.4)
+        tag_input.click()
+        tag_input.fill("")
+        delay(0.1, 0.2)
+        for ch in display_name:
+            tag_input.type(ch, delay=random.randint(55, 120))
+        delay(0.9, 1.6)   # let the list filter
+
+    # Try to click a matching tag from the filtered list
+    # Steam renders tags as <a> or <label> elements; try both + generic text match
+    clicked = False
+    for strategy in [
+        lambda: container.locator("a").filter(has_text=display_name).first,
+        lambda: container.locator("label").filter(has_text=display_name).first,
+        lambda: container.get_by_text(display_name, exact=True).first,
+        lambda: container.get_by_text(display_name, exact=False).first,
+    ]:
+        try:
+            el = strategy()
+            if el.count() > 0 and el.is_visible(timeout=2000):
+                move_to(page, el)
+                delay(0.15, 0.35)
+                el.click()
+                clicked = True
+                break
+        except Exception:
+            continue
+
+    if not clicked and has_input:
+        # Last resort: submit via Enter and accept whatever the first match is
+        try:
+            tag_input.press("Enter")
+            clicked = True
+        except Exception:
+            pass
+
+    if clicked:
+        # Wait for the results pane to update after applying the tag
+        try:
+            page.wait_for_load_state("networkidle", timeout=8000)
+        except Exception:
+            delay(1.5, 2.5)
+
+        # Clear the input so it's ready for the next tag
+        if has_input:
+            try:
+                tag_input.fill("")
+            except Exception:
+                pass
+        return True
+
+    print(f"    '{display_name}': no matching entry found in sidebar — skipping.")
+    return False
+
+
+def _has_results(page) -> bool:
+    """Return True if the search results pane contains at least one game row."""
+    try:
+        page.wait_for_selector("a.search_result_row", timeout=8000)
+        return page.locator("a.search_result_row").count() > 0
+    except Exception:
+        return False
 
 
 # ── Internal scrape helpers ───────────────────────────────────────────────────
 
 def _dismiss_dialogs(page) -> None:
-    """Bypass age gates and cookie banners."""
     if page.locator("#ageYear").count() > 0:
         page.select_option("#ageYear", "1990")
         for sel in ["#view_product_page_btn", "a.btnv6_blue_hoverfade"]:
@@ -131,7 +221,6 @@ def _dismiss_dialogs(page) -> None:
 
 
 def _scrape_search(page, limit: int = 20) -> list:
-    """Extract games from a Steam search results page."""
     print("  Waiting for search results to load...")
     try:
         page.wait_for_selector("a.search_result_row", timeout=20000)
@@ -171,12 +260,12 @@ def _scrape_search(page, limit: int = 20) -> list:
                 original = current
 
             results.append({
-                "name":          name,
-                "current_price": current,
+                "name":           name,
+                "current_price":  current,
                 "original_price": original,
-                "discount_pct":  discount,
-                "tags":          "",   # filled in by run()
-                "url":           href,
+                "discount_pct":   discount,
+                "tags":           "",   # stamped by run()
+                "url":            href,
             })
         except Exception as e:
             print(f"  Row {i} skipped: {e}")
@@ -185,7 +274,6 @@ def _scrape_search(page, limit: int = 20) -> list:
 
 
 def _scrape_app(page, url: str) -> list:
-    """Scrape a single Steam store app page."""
     page.goto(url)
     page.wait_for_load_state("networkidle")
     _dismiss_dialogs(page)
@@ -214,10 +302,9 @@ def _scrape_app(page, url: str) -> list:
               "discount_pct": discount, "tags": "", "url": url}]
 
 
-# ── Price monitor helper (no tag filtering needed) ────────────────────────────
+# ── Price monitor helper ──────────────────────────────────────────────────────
 
 def get_price(url: str) -> dict | None:
-    """Fetch current price for one Steam URL. Used by the price monitor."""
     with sync_playwright() as p:
         browser, ctx = new_context(p)
         page = ctx.new_page()
@@ -269,23 +356,20 @@ def _save_csv(results: list) -> str:
 def run() -> None:
     url = input(f"\n  Steam URL (search or app page) [{DEFAULT_URL}]: ").strip() or DEFAULT_URL
 
-    # Tag filter — only meaningful for search/specials pages, not individual app pages
+    tag_raw = input(
+        "  Filter by tags (e.g. fps, rpg, multiplayer) or Enter to skip: "
+    ).strip()
+
+    # Resolve user's input into Steam display names
+    tag_display_names: list[str] = []
     active_tags = ""
-    tag_raw = input("  Filter by tags (e.g. fps, rpg, multiplayer) or Enter to skip: ").strip()
 
     if tag_raw:
         if "/app/" in url:
             active_tags = tag_raw
             print("  Note: tag filtering only works on search pages — tags recorded in CSV only.")
         else:
-            label, id_csv = _resolve_tags(tag_raw)
-            if id_csv:
-                active_tags = label
-                url = _build_tag_url(url, id_csv.split(","))
-                print(f"  Tags applied : {label}")
-                print(f"  Filter URL   : {url}")
-            else:
-                print("  No valid tags matched — scraping without tag filter.")
+            tag_display_names = _parse_tag_input(tag_raw)
 
     with sync_playwright() as p:
         browser, ctx = new_context(p)
@@ -295,6 +379,29 @@ def run() -> None:
         page.goto(url)
         page.wait_for_load_state("networkidle")
         _dismiss_dialogs(page)
+
+        # Apply tags one at a time via the sidebar
+        if tag_display_names:
+            print(f"\n  Applying {len(tag_display_names)} tag filter(s) via sidebar...")
+            applied: list[str] = []
+            for name in tag_display_names:
+                print(f"    → {name} ...", end=" ", flush=True)
+                ok = _apply_tag_via_sidebar(page, name)
+                if ok:
+                    applied.append(name)
+                    print("done")
+                else:
+                    print("skipped")
+            active_tags = ", ".join(applied)
+
+            # Verify results exist before committing to a full scrape
+            if applied:
+                print(f"\n  Checking results for: {active_tags}")
+                if not _has_results(page):
+                    print("  0 results after applying tags — try a broader filter.")
+                    browser.close()
+                    return
+                print("  Results confirmed. Starting scrape...")
 
         if "/app/" in url:
             results = _scrape_app(page, url)
@@ -307,11 +414,10 @@ def run() -> None:
         print("  Nothing scraped.")
         return
 
-    # Stamp every row with the active tag filter
     for r in results:
         r["tags"] = active_tags
 
-    print(f"\n  {len(results)} game(s) found:")
+    print(f"\n  {len(results)} game(s):")
     for r in results[:8]:
         print(f"    {r['name']:<42} {r['current_price']:<12} ({r['discount_pct']})")
     if len(results) > 8:
