@@ -189,6 +189,65 @@ class YaraTests(unittest.TestCase):
         self.assertTrue(any("yara:" in d for d in r["detections"]))
 
 
+class FileTypeTests(unittest.TestCase):
+    def setUp(self):
+        self.sigs = scanner.load_signatures()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_detect_filetype_magic(self):
+        self.assertEqual(scanner.detect_filetype(b"MZ\x90\x00"), "PE")
+        self.assertEqual(scanner.detect_filetype(b"\x7fELF"), "ELF")
+        self.assertEqual(scanner.detect_filetype(b"%PDF-1.7"), "PDF")
+        self.assertEqual(scanner.detect_filetype(b"PK\x03\x04"), "ZIP")
+        self.assertIsNone(scanner.detect_filetype(b"plain text"))
+
+    def test_extension_spoofing_is_malicious(self):
+        p = self.dir / "invoice.pdf"
+        p.write_bytes(b"MZ\x90\x00" + b"\x00" * 100)  # PE wearing a .pdf name
+        r = scanner.scan_file(p, self.sigs)
+        self.assertEqual(r["verdict"], "malicious")
+        self.assertEqual(r["filetype"], "PE")
+        self.assertTrue(any("spoofing" in d for d in r["detections"]))
+
+    def test_genuine_pdf_is_clean(self):
+        p = self.dir / "real.pdf"
+        p.write_bytes(b"%PDF-1.7\nharmless document body")
+        r = scanner.scan_file(p, self.sigs)
+        self.assertEqual(r["verdict"], "clean")
+        self.assertEqual(r["filetype"], "PDF")
+
+
+class NestedArchiveTests(unittest.TestCase):
+    def setUp(self):
+        self.sigs = scanner.load_signatures()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_eicar_in_nested_zip_is_found(self):
+        import io
+        import zipfile
+        inner = io.BytesIO()
+        with zipfile.ZipFile(inner, "w") as z:
+            z.writestr("evil.txt", scanner.EICAR)
+        outer = self.dir / "outer.zip"
+        with zipfile.ZipFile(outer, "w") as z:
+            z.writestr("nested.zip", inner.getvalue())
+            z.writestr("readme.txt", "hello")
+        r = scanner.scan_file(outer, self.sigs)
+        self.assertEqual(r["verdict"], "malicious")
+        # The deep member must appear with its full nested path.
+        deep = [m for m in r["members"] if m["path"].endswith("nested.zip::evil.txt")]
+        self.assertEqual(len(deep), 1)
+        self.assertEqual(deep[0]["verdict"], "malicious")
+
+
 class WalkQuarantineReportTests(unittest.TestCase):
     def setUp(self):
         self.sigs = scanner.load_signatures()

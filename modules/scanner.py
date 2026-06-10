@@ -46,6 +46,14 @@ ARCHIVE_EXTS = {".zip", ".jar", ".tar", ".tgz", ".gz", ".tar.gz"}
 # Zip-bomb guards: skip any single member or total expansion beyond these.
 MAX_ARCHIVE_MEMBER_BYTES = 64 * 1024 * 1024   # 64 MB per member
 MAX_ARCHIVE_TOTAL_BYTES = 256 * 1024 * 1024   # 256 MB per archive
+MAX_ARCHIVE_DEPTH = 4                          # how deep to recurse into nested archives
+
+# True file types that are executable code.
+EXECUTABLE_TYPES = {"PE", "ELF", "Mach-O"}
+# Extensions a user trusts as "just a document/image" — an executable wearing
+# one of these is almost certainly trying to deceive (extension spoofing).
+DECEPTIVE_EXTS = {".pdf", ".doc", ".docx", ".txt", ".rtf", ".csv",
+                  ".jpg", ".jpeg", ".png", ".gif", ".xls", ".xlsx"}
 
 EICAR = (
     r"X5O!P%@AP[4\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*"
@@ -100,6 +108,30 @@ def load_yara_rules():
 # ──────────────────────────────────────────────────────────────────────────
 # Primitives
 # ──────────────────────────────────────────────────────────────────────────
+def detect_filetype(data: bytes) -> str | None:
+    """Identify a file's true type from its magic bytes, ignoring the extension."""
+    if data[:2] == b"MZ":
+        return "PE"            # Windows executable / DLL
+    if data[:4] == b"\x7fELF":
+        return "ELF"           # Linux executable
+    if data[:4] in (b"\xfe\xed\xfa\xce", b"\xfe\xed\xfa\xcf",
+                    b"\xcf\xfa\xed\xfe", b"\xce\xfa\xed\xfe"):
+        return "Mach-O"        # macOS executable
+    if data[:4] == b"PK\x03\x04":
+        return "ZIP"
+    if data[:4] == b"%PDF":
+        return "PDF"
+    if data[:2] == b"\x1f\x8b":
+        return "GZIP"
+    if data[:3] == b"\xff\xd8\xff":
+        return "JPEG"
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "PNG"
+    if data[:6] in (b"GIF87a", b"GIF89a"):
+        return "GIF"
+    return None
+
+
 def hash_file(path: Path) -> tuple[str, str]:
     """Stream the file once, return (sha256_hex, md5_hex)."""
     h_sha, h_md5 = sha256(), md5()
@@ -164,6 +196,14 @@ def _evaluate(result: dict, sha_hex: str, body: bytes | None,
 
     # Layers 2 & 3 — pattern + entropy (body is None when too large to read)
     if body is not None:
+        # Layer 2.0 — true file type vs claimed extension (spoofing)
+        ftype = detect_filetype(body)
+        result["filetype"] = ftype
+        if ftype in EXECUTABLE_TYPES and suffix in DECEPTIVE_EXTS:
+            result["detections"].append(
+                f"spoofing: {suffix} file is actually a {ftype} executable")
+            _escalate(result, "malicious")
+
         for sig in sigs["patterns"]:
             hit = ("needle" in sig and sig["needle"] in body) or (
                 "regex" in sig and sig["regex"].search(body))
@@ -252,62 +292,103 @@ def scan_file(path: Path, sigs: dict, use_vt: bool = False) -> dict:
 # ──────────────────────────────────────────────────────────────────────────
 # Archive inspection  ·  scan members of zip/tar without extracting to disk
 # ──────────────────────────────────────────────────────────────────────────
-def scan_archive(path: Path, sigs: dict, use_vt: bool = False) -> list[dict]:
-    """Read each archive member into memory (bomb-guarded) and scan it."""
+def _looks_like_archive(name: str, data: bytes) -> bool:
+    suffix = "".join(Path(name).suffixes[-2:]).lower()
+    if Path(name).suffix.lower() in ARCHIVE_EXTS or suffix in ARCHIVE_EXTS:
+        return True
+    return detect_filetype(data) in ("ZIP", "GZIP")
+
+
+def scan_archive(source, sigs: dict, use_vt: bool = False,
+                 depth: int = 0, label: str | None = None) -> list[dict]:
+    """Scan members of a zip/tar (bomb-guarded), recursing into nested archives.
+
+    `source` may be a filesystem Path (top level) or raw bytes (a nested archive
+    member). Recursion stops at MAX_ARCHIVE_DEPTH.
+    """
+    import io
     import tarfile
     import zipfile
 
     members: list[dict] = []
     budget = MAX_ARCHIVE_TOTAL_BYTES
 
+    if isinstance(source, (str, Path)):
+        path = Path(source)
+        arc_label = label or path.name
+        zip_src = lambda: zipfile.ZipFile(path)
+        tar_src = lambda: tarfile.open(path)
+        is_zip = zipfile.is_zipfile(path)
+        is_tar = (not is_zip) and tarfile.is_tarfile(path)
+    else:
+        arc_label = label or "<archive>"
+        zip_src = lambda: zipfile.ZipFile(io.BytesIO(source))
+        tar_src = lambda: tarfile.open(fileobj=io.BytesIO(source))
+        is_zip = zipfile.is_zipfile(io.BytesIO(source))
+        is_tar = False
+        if not is_zip:
+            try:
+                tarfile.open(fileobj=io.BytesIO(source)).close()
+                is_tar = True
+            except Exception:
+                is_tar = False
+
     def consider(name: str, declared_size: int, reader) -> None:
         nonlocal budget
-        label = f"{path.name}::{name}"
+        mlabel = f"{arc_label}::{name}"
         if declared_size > MAX_ARCHIVE_MEMBER_BYTES:
-            members.append({"path": label, "size": declared_size, "sha256": "",
-                            "md5": "", "entropy": 0.0, "verdict": "suspicious",
-                            "detections": [f"archive: oversized member "
-                                           f"({declared_size} bytes) — possible bomb"]})
+            members.append(_bomb(mlabel, declared_size, "oversized member"))
             return
         if declared_size > budget:
-            members.append({"path": label, "size": declared_size, "sha256": "",
-                            "md5": "", "entropy": 0.0, "verdict": "suspicious",
-                            "detections": ["archive: total extract budget exceeded "
-                                           "— possible bomb"]})
+            members.append(_bomb(mlabel, declared_size, "total extract budget exceeded"))
             return
         try:
             data = reader()
         except Exception as e:
-            members.append({"path": label, "size": declared_size, "sha256": "",
+            members.append({"path": mlabel, "size": declared_size, "sha256": "",
                             "md5": "", "entropy": 0.0, "verdict": "error",
                             "detections": [f"archive: unreadable member ({e})"]})
             return
         budget -= len(data)
-        res = scan_bytes(label, data, sigs, use_vt)
-        members.append(res)
+        members.append(scan_bytes(mlabel, data, sigs, use_vt))
+
+        # Recurse into nested archives, depth-limited.
+        if depth + 1 < MAX_ARCHIVE_DEPTH and _looks_like_archive(name, data):
+            members.extend(scan_archive(data, sigs, use_vt,
+                                        depth=depth + 1, label=mlabel))
+        elif depth + 1 >= MAX_ARCHIVE_DEPTH and _looks_like_archive(name, data):
+            members.append({"path": f"{mlabel}::<nested>", "size": 0, "sha256": "",
+                            "md5": "", "entropy": 0.0, "verdict": "suspicious",
+                            "detections": [f"archive: nesting deeper than "
+                                           f"{MAX_ARCHIVE_DEPTH} levels — possible bomb"]})
 
     try:
-        if zipfile.is_zipfile(path):
-            with zipfile.ZipFile(path) as zf:
+        if is_zip:
+            with zip_src() as zf:
                 for info in zf.infolist():
                     if info.is_dir():
                         continue
                     consider(info.filename, info.file_size,
                              lambda i=info, z=zf: z.read(i))
-        elif tarfile.is_tarfile(path):
-            with tarfile.open(path) as tf:
+        elif is_tar:
+            with tar_src() as tf:
                 for info in tf.getmembers():
                     if not info.isfile():
                         continue
                     consider(info.name, info.size,
                              lambda i=info, t=tf: t.extractfile(i).read())
     except Exception as e:
-        members.append({"path": f"{path.name}::<archive>", "size": 0,
+        members.append({"path": f"{arc_label}::<archive>", "size": 0,
                         "sha256": "", "md5": "", "entropy": 0.0,
                         "verdict": "error",
                         "detections": [f"archive: could not open ({e})"]})
 
     return members
+
+
+def _bomb(label: str, size: int, why: str) -> dict:
+    return {"path": label, "size": size, "sha256": "", "md5": "", "entropy": 0.0,
+            "verdict": "suspicious", "detections": [f"archive: {why} — possible bomb"]}
 
 
 # ──────────────────────────────────────────────────────────────────────────

