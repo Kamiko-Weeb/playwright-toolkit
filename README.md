@@ -90,6 +90,15 @@ A real, working file scanner with four detection layers (cheapest → most expen
 **extension spoofing** is caught: a `statement.pdf` that's actually a Windows
 executable is flagged as malicious regardless of its name.
 
+**PE executable analysis** (`modules/pe.py`) — Windows executables are parsed
+statically (DOS/PE headers, section table, import directory — pure stdlib `struct`,
+no dependencies) to derive two signals:
+- **Packing** — a section with very high entropy, a zero-raw/large-virtual section,
+  or a known packer name (`UPX0`, `.aspack` …) means the real code is hidden on disk.
+- **Capability** — the imported Win32 APIs reveal intent. Combinations like
+  `VirtualAllocEx` + `WriteProcessMemory` + `CreateRemoteThread` (process injection)
+  or `URLDownloadToFile` + `WinExec` (download-and-execute) are flagged as malicious.
+
 **Archive inspection** — `.zip`, `.jar` and `.tar(.gz)` files are opened in
 memory and each member is scanned individually, so malware hidden inside an
 archive is caught even though on-disk scanning would never see it. Nested

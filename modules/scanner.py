@@ -204,6 +204,18 @@ def _evaluate(result: dict, sha_hex: str, body: bytes | None,
                 f"spoofing: {suffix} file is actually a {ftype} executable")
             _escalate(result, "malicious")
 
+        # Layer 2.5 — PE static analysis (packing + dangerous import combos)
+        if ftype == "PE":
+            from modules import pe
+            info = pe.analyze(body)
+            if info["findings"]:
+                result["pe"] = {"machine": info["machine"],
+                                "sections": [s["name"] for s in info["sections"]],
+                                "findings": info["findings"]}
+                for f in info["findings"]:
+                    result["detections"].append(f"pe: {f}")
+                _escalate(result, info["verdict"])
+
         for sig in sigs["patterns"]:
             hit = ("needle" in sig and sig["needle"] in body) or (
                 "regex" in sig and sig["regex"].search(body))

@@ -189,6 +189,61 @@ class YaraTests(unittest.TestCase):
         self.assertTrue(any("yara:" in d for d in r["detections"]))
 
 
+class PEAnalyzerTests(unittest.TestCase):
+    def setUp(self):
+        self.sigs = scanner.load_signatures()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_non_pe_is_clean(self):
+        from modules import pe
+        a = pe.analyze(b"this is not an executable")
+        self.assertFalse(a["is_pe"])
+        self.assertEqual(a["verdict"], "clean")
+
+    def test_packed_section_is_suspicious(self):
+        from modules import pe
+        from tests.pefix import build_pe
+        blob = build_pe([("UPX0", b"\x00" * 64), ("UPX1", os.urandom(4096))])
+        a = pe.analyze(blob)
+        self.assertTrue(a["is_pe"])
+        self.assertEqual(a["verdict"], "suspicious")
+        self.assertTrue(any("packer" in f or "entropy" in f for f in a["findings"]))
+
+    def test_benign_pe_is_clean(self):
+        from modules import pe
+        from tests.pefix import build_pe
+        blob = build_pe([(".text", b"hello world " * 200)],
+                        imports={"KERNEL32.dll": ["GetCurrentProcessId"]})
+        a = pe.analyze(blob)
+        self.assertTrue(a["is_pe"])
+        self.assertEqual(a["verdict"], "clean")
+
+    def test_injection_imports_are_malicious(self):
+        from modules import pe
+        from tests.pefix import build_pe
+        blob = build_pe([(".text", b"code" * 100)], imports={
+            "KERNEL32.dll": ["VirtualAllocEx", "WriteProcessMemory",
+                             "CreateRemoteThread"]})
+        a = pe.analyze(blob)
+        self.assertEqual(a["verdict"], "malicious")
+        self.assertTrue(any("process-injection" in f for f in a["findings"]))
+
+    def test_scan_file_surfaces_pe_findings(self):
+        from tests.pefix import build_pe
+        blob = build_pe([(".text", b"code" * 100)], imports={
+            "WININET.dll": ["URLDownloadToFile", "WinExec"]})
+        p = self.dir / "tool.exe"
+        p.write_bytes(blob)
+        r = scanner.scan_file(p, self.sigs)
+        self.assertEqual(r["verdict"], "malicious")
+        self.assertTrue(any(d.startswith("pe:") for d in r["detections"]))
+        self.assertIn("pe", r)
+
+
 class FileTypeTests(unittest.TestCase):
     def setUp(self):
         self.sigs = scanner.load_signatures()
