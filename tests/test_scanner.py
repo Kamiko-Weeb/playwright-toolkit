@@ -252,5 +252,17 @@ class CliTests(unittest.TestCase):
         self.assertEqual(rc, 2)
 
 
+class EvaluationTests(unittest.TestCase):
+    def test_metrics_are_strong_with_no_false_positives(self):
+        from modules import evaluate
+        m = evaluate.evaluate()
+        self.assertGreaterEqual(m["n"], 10)
+        # The detector must not raise false alarms on the benign samples.
+        self.assertEqual(m["fp"], 0)
+        # And it should catch essentially all of the labeled threats.
+        self.assertGreaterEqual(m["recall"], 0.99)
+        self.assertEqual(m["tp"] + m["fn"] + m["tn"] + m["fp"], m["n"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -11,6 +11,7 @@ MENU = """
 ║  5.  Steam     — scrape game prices & discounts        ║
 ║  6.  Amazon.ca — scrape product prices & stock         ║
 ║  7.  Scanner   — signature & heuristic virus scanner   ║
+║  8.  Eval      — measure scanner precision & recall    ║
 ║  0.  Exit                                              ║
 ╚════════════════════════════════════════════════════════╝"""
 
@@ -18,7 +19,7 @@ def load_modules():
     # Imported lazily so the `scan` shortcut doesn't require Playwright.
     from modules import (
         scraper, form_bot, monitor, crawler,
-        steam_scraper, amazon_scraper, scanner,
+        steam_scraper, amazon_scraper, scanner, evaluate,
     )
     return {
         "1": ("Scraper",          scraper.run),
@@ -28,6 +29,7 @@ def load_modules():
         "5": ("Steam Scraper",    steam_scraper.run),
         "6": ("Amazon Scraper",   amazon_scraper.run),
         "7": ("Virus Scanner",    scanner.run),
+        "8": ("Scanner Eval",     evaluate.run),
     }
 
 
@@ -59,4 +61,8 @@ if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "scan":
         from modules import scanner
         sys.exit(scanner.cli(sys.argv[2:]))
+    if len(sys.argv) > 1 and sys.argv[1] == "eval":
+        from modules import evaluate
+        evaluate.run()
+        sys.exit(0)
     main()

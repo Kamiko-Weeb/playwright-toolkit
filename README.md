@@ -113,6 +113,16 @@ python main.py scan ~/Downloads --vt           # also query VirusTotal
 Exit code is `1` when anything malicious is found, `0` when clean, `2` on a bad
 path — so you can wire it into scripts or a CI job.
 
+**Evaluation harness** (`modules/evaluate.py`, menu option 8):
+```bash
+python main.py eval
+```
+Builds a labeled corpus of known-bad and known-good files, scans it, and reports
+a confusion matrix with **precision, recall, accuracy and F1** — the honest way
+to quantify a detector. All samples are harmless (EICAR + benign heuristic
+triggers). Great material for a project writeup, and it demonstrates the
+false-positive control (a high-entropy file with a safe extension stays clean).
+
 **Tests:**
 ```bash
 python -m unittest discover -s tests -v
