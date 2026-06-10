@@ -94,6 +94,23 @@ Prompts for: whether to drop an EICAR sample, path to scan (file or folder),
 whether to use VirusTotal, and whether to quarantine hits.
 Saves a CSV + JSON report. Extend detection by editing `config/signatures.json`.
 
+**Non-interactive CLI** (no Playwright needed, scriptable, CI-friendly):
+```bash
+python main.py scan ~/Downloads               # scan a folder
+python main.py scan suspect.exe --quarantine   # scan + isolate hits
+python main.py scan ~/Downloads --vt           # also query VirusTotal
+```
+Exit code is `1` when anything malicious is found, `0` when clean, `2` on a bad
+path — so you can wire it into scripts or a CI job.
+
+**Tests:**
+```bash
+python -m unittest discover -s tests -v
+```
+`tests/test_scanner.py` covers every detection layer, the directory walk,
+quarantine, report writing and the CLI exit codes — all using temp dirs and the
+harmless EICAR string, no real malware.
+
 ---
 
 ## Output

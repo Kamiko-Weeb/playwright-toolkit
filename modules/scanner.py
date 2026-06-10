@@ -248,8 +248,63 @@ def make_eicar_sample() -> Path:
     return sample
 
 
+def summarise(results: list[dict], elapsed: float) -> Counter:
+    counts = Counter(r["verdict"] for r in results)
+    print("\n  ── Summary ─────────────────────────────")
+    print(f"    Files scanned : {len(results)}")
+    print(f"    Malicious     : {counts.get('malicious', 0)}")
+    print(f"    Suspicious    : {counts.get('suspicious', 0)}")
+    print(f"    Clean         : {counts.get('clean', 0)}")
+    print(f"    Errors        : {counts.get('error', 0)}")
+    print(f"    Time          : {elapsed:.2f}s")
+    return counts
+
+
 # ──────────────────────────────────────────────────────────────────────────
-# Entry point
+# Non-interactive CLI  ·  python -m modules.scanner <path> [--quarantine] [--vt]
+# ──────────────────────────────────────────────────────────────────────────
+def cli(argv: list[str] | None = None) -> int:
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="scanner",
+        description="Signature & heuristic virus scanner (non-interactive).",
+    )
+    parser.add_argument("path", help="file or folder to scan")
+    parser.add_argument("-q", "--quarantine", action="store_true",
+                        help="copy flagged files into output/quarantine/")
+    parser.add_argument("--vt", action="store_true",
+                        help="enable VirusTotal lookups (needs VT_API_KEY)")
+    parser.add_argument("--no-report", action="store_true",
+                        help="skip writing the CSV/JSON report")
+    args = parser.parse_args(argv)
+
+    target = Path(args.path).expanduser()
+    if not target.exists():
+        print(f"  Path not found: {target}")
+        return 2
+    if args.vt and not VT_API_KEY:
+        print("  --vt given but VT_API_KEY is not set; continuing offline.")
+
+    sigs = load_signatures()
+    start = time.time()
+    results = scan_path(target, sigs, use_vt=args.vt and bool(VT_API_KEY))
+    counts = summarise(results, time.time() - start)
+
+    if args.quarantine and (counts.get("malicious") or counts.get("suspicious")):
+        moved = quarantine(results)
+        print(f"  Quarantined {moved} file(s) → {QUARANTINE_DIR}")
+
+    if not args.no_report:
+        csv_path, json_path = save_report(results, target)
+        print(f"\n  Report: {csv_path}\n          {json_path}")
+
+    # Exit non-zero when something was flagged — handy for scripts/CI.
+    return 1 if counts.get("malicious") else 0
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Interactive entry point
 # ──────────────────────────────────────────────────────────────────────────
 def run():
     sigs = load_signatures()
@@ -274,16 +329,7 @@ def run():
 
     start = time.time()
     results = scan_path(target, sigs, use_vt=use_vt)
-    elapsed = time.time() - start
-
-    counts = Counter(r["verdict"] for r in results)
-    print("\n  ── Summary ─────────────────────────────")
-    print(f"    Files scanned : {len(results)}")
-    print(f"    Malicious     : {counts.get('malicious', 0)}")
-    print(f"    Suspicious    : {counts.get('suspicious', 0)}")
-    print(f"    Clean         : {counts.get('clean', 0)}")
-    print(f"    Errors        : {counts.get('error', 0)}")
-    print(f"    Time          : {elapsed:.2f}s")
+    counts = summarise(results, time.time() - start)
 
     if counts.get("malicious") or counts.get("suspicious"):
         if input("\n  Quarantine flagged files? [y/N]: ").strip().lower() == "y":
@@ -293,3 +339,8 @@ def run():
     csv_path, json_path = save_report(results, target)
     print(f"\n  Report: {csv_path}")
     print(f"          {json_path}")
+
+
+if __name__ == "__main__":
+    import sys
+    sys.exit(cli())
