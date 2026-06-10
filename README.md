@@ -2,6 +2,9 @@
 
 A modular browser automation toolkit built with Python + Playwright. Every module opens a real visible browser window and moves the cursor so you can watch exactly what it's doing.
 
+> **Featured: a layered static malware scanner** (modules 7 & 8). For the full
+> design, evaluation and performance write-up, see [`docs/REPORT.md`](docs/REPORT.md).
+
 ## Setup
 
 ```bash
