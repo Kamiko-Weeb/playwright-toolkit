@@ -40,6 +40,11 @@ ENTROPY_FLAG = 7.2
 # Extensions that earn a closer look when also high-entropy.
 RISKY_EXTS = {".exe", ".dll", ".scr", ".js", ".vbs", ".ps1", ".bat",
               ".cmd", ".jar", ".sh", ".php", ".hta", ".com"}
+# Archive types whose members get scanned in memory (.jar is a zip too).
+ARCHIVE_EXTS = {".zip", ".jar", ".tar", ".tgz", ".gz", ".tar.gz"}
+# Zip-bomb guards: skip any single member or total expansion beyond these.
+MAX_ARCHIVE_MEMBER_BYTES = 64 * 1024 * 1024   # 64 MB per member
+MAX_ARCHIVE_TOTAL_BYTES = 256 * 1024 * 1024   # 256 MB per archive
 
 EICAR = (
     r"X5O!P%@AP[4\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*"
@@ -119,6 +124,62 @@ def vt_lookup(sha_hex: str) -> dict | None:
 # ──────────────────────────────────────────────────────────────────────────
 # Per-file scan
 # ──────────────────────────────────────────────────────────────────────────
+def _escalate(result: dict, verdict: str) -> None:
+    """Raise the verdict only upward: clean → suspicious → malicious."""
+    order = {"clean": 0, "suspicious": 1, "malicious": 2}
+    if order[verdict] > order.get(result["verdict"], 0):
+        result["verdict"] = verdict
+
+
+def _evaluate(result: dict, sha_hex: str, body: bytes | None,
+              suffix: str, sigs: dict, use_vt: bool) -> dict:
+    """Apply all detection layers given a precomputed hash and (optional) body."""
+    # Layer 1 — known-bad hash
+    if sha_hex in sigs["hashes"]:
+        _escalate(result, "malicious")
+        result["detections"].append(f"hash: {sigs['hashes'][sha_hex]}")
+
+    # Layers 2 & 3 — pattern + entropy (body is None when too large to read)
+    if body is not None:
+        for sig in sigs["patterns"]:
+            hit = ("needle" in sig and sig["needle"] in body) or (
+                "regex" in sig and sig["regex"].search(body))
+            if hit:
+                sev = sig["severity"]
+                result["detections"].append(f"pattern: {sig['name']} ({sev})")
+                _escalate(result, "malicious" if sev in ("malicious", "test")
+                          else "suspicious")
+
+        ent = shannon_entropy(body)
+        result["entropy"] = round(ent, 2)
+        if ent >= ENTROPY_FLAG and suffix in RISKY_EXTS:
+            result["detections"].append(
+                f"heuristic: high entropy {ent:.2f} on risky type {suffix}")
+            _escalate(result, "suspicious")
+
+    # Layer 4 — VirusTotal reputation
+    if use_vt:
+        vt = vt_lookup(sha_hex)
+        if vt and vt.get("known") and vt.get("malicious", 0) > 0:
+            result["detections"].append(
+                f"virustotal: {vt['malicious']} engines flagged malicious")
+            _escalate(result, "malicious")
+        elif vt and "error" in vt:
+            result["detections"].append(f"virustotal: lookup error ({vt['error']})")
+
+    return result
+
+
+def scan_bytes(name: str, data: bytes, sigs: dict, use_vt: bool = False) -> dict:
+    """Scan an in-memory blob (e.g. an archive member) by name + content."""
+    result = {"path": name, "size": len(data),
+              "sha256": sha256(data).hexdigest(), "md5": md5(data).hexdigest(),
+              "entropy": 0.0, "verdict": "clean", "detections": []}
+    body = data if len(data) <= MAX_PATTERN_SCAN_BYTES else None
+    suffix = Path(name.split("::")[-1]).suffix.lower()
+    return _evaluate(result, result["sha256"], body, suffix, sigs, use_vt)
+
+
 def scan_file(path: Path, sigs: dict, use_vt: bool = False) -> dict:
     result = {"path": str(path), "size": 0, "sha256": "", "md5": "",
               "entropy": 0.0, "verdict": "clean", "detections": []}
@@ -132,48 +193,86 @@ def scan_file(path: Path, sigs: dict, use_vt: bool = False) -> dict:
         result["detections"].append(f"unreadable: {e}")
         return result
 
-    # Layer 1 — known-bad hash
-    if sha_hex in sigs["hashes"]:
-        result["verdict"] = "malicious"
-        result["detections"].append(f"hash: {sigs['hashes'][sha_hex]}")
-
-    # Layers 2 & 3 — read body once for pattern + entropy
+    body = None
     if result["size"] <= MAX_PATTERN_SCAN_BYTES:
         try:
             body = path.read_bytes()
         except (OSError, PermissionError):
             body = b""
 
-        for sig in sigs["patterns"]:
-            hit = ("needle" in sig and sig["needle"] in body) or (
-                "regex" in sig and sig["regex"].search(body))
-            if hit:
-                sev = sig["severity"]
-                result["detections"].append(f"pattern: {sig['name']} ({sev})")
-                if sev in ("malicious", "test") and result["verdict"] == "clean":
-                    result["verdict"] = "malicious"
-                elif sev == "suspicious" and result["verdict"] == "clean":
-                    result["verdict"] = "suspicious"
+    _evaluate(result, sha_hex, body, path.suffix.lower(), sigs, use_vt)
 
-        ent = shannon_entropy(body)
-        result["entropy"] = round(ent, 2)
-        if ent >= ENTROPY_FLAG and path.suffix.lower() in RISKY_EXTS:
-            result["detections"].append(
-                f"heuristic: high entropy {ent:.2f} on risky type {path.suffix}")
-            if result["verdict"] == "clean":
-                result["verdict"] = "suspicious"
-
-    # Layer 4 — VirusTotal reputation
-    if use_vt:
-        vt = vt_lookup(sha_hex)
-        if vt and vt.get("known") and vt.get("malicious", 0) > 0:
-            result["detections"].append(
-                f"virustotal: {vt['malicious']} engines flagged malicious")
-            result["verdict"] = "malicious"
-        elif vt and "error" in vt:
-            result["detections"].append(f"virustotal: lookup error ({vt['error']})")
+    # Peek inside archives for members that on-disk scanning would never see.
+    if path.suffix.lower() in ARCHIVE_EXTS:
+        result["members"] = scan_archive(path, sigs, use_vt)
+        for m in result["members"]:
+            if m["verdict"] != "clean":
+                _escalate(result, m["verdict"])
+                result["detections"].append(
+                    f"archive member {Path(m['path']).name}: {m['verdict']}")
 
     return result
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Archive inspection  ·  scan members of zip/tar without extracting to disk
+# ──────────────────────────────────────────────────────────────────────────
+def scan_archive(path: Path, sigs: dict, use_vt: bool = False) -> list[dict]:
+    """Read each archive member into memory (bomb-guarded) and scan it."""
+    import tarfile
+    import zipfile
+
+    members: list[dict] = []
+    budget = MAX_ARCHIVE_TOTAL_BYTES
+
+    def consider(name: str, declared_size: int, reader) -> None:
+        nonlocal budget
+        label = f"{path.name}::{name}"
+        if declared_size > MAX_ARCHIVE_MEMBER_BYTES:
+            members.append({"path": label, "size": declared_size, "sha256": "",
+                            "md5": "", "entropy": 0.0, "verdict": "suspicious",
+                            "detections": [f"archive: oversized member "
+                                           f"({declared_size} bytes) — possible bomb"]})
+            return
+        if declared_size > budget:
+            members.append({"path": label, "size": declared_size, "sha256": "",
+                            "md5": "", "entropy": 0.0, "verdict": "suspicious",
+                            "detections": ["archive: total extract budget exceeded "
+                                           "— possible bomb"]})
+            return
+        try:
+            data = reader()
+        except Exception as e:
+            members.append({"path": label, "size": declared_size, "sha256": "",
+                            "md5": "", "entropy": 0.0, "verdict": "error",
+                            "detections": [f"archive: unreadable member ({e})"]})
+            return
+        budget -= len(data)
+        res = scan_bytes(label, data, sigs, use_vt)
+        members.append(res)
+
+    try:
+        if zipfile.is_zipfile(path):
+            with zipfile.ZipFile(path) as zf:
+                for info in zf.infolist():
+                    if info.is_dir():
+                        continue
+                    consider(info.filename, info.file_size,
+                             lambda i=info, z=zf: z.read(i))
+        elif tarfile.is_tarfile(path):
+            with tarfile.open(path) as tf:
+                for info in tf.getmembers():
+                    if not info.isfile():
+                        continue
+                    consider(info.name, info.size,
+                             lambda i=info, t=tf: t.extractfile(i).read())
+    except Exception as e:
+        members.append({"path": f"{path.name}::<archive>", "size": 0,
+                        "sha256": "", "md5": "", "entropy": 0.0,
+                        "verdict": "error",
+                        "detections": [f"archive: could not open ({e})"]})
+
+    return members
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -196,6 +295,10 @@ def scan_path(target: Path, sigs: dict, use_vt: bool = False) -> list[dict]:
             print(f"  [{tag}] {fp}")
             for d in res["detections"]:
                 print(f"           └─ {d}")
+            for m in res.get("members", []):
+                if m["verdict"] != "clean":
+                    print(f"           └─ inside: {Path(m['path']).name} "
+                          f"[{m['verdict']}] {'; '.join(m['detections'])}")
         if i % 50 == 0 or i == total:
             print(f"  ...{i}/{total} scanned")
     return results

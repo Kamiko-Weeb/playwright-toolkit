@@ -93,6 +93,66 @@ class ScanFileTests(unittest.TestCase):
         self.assertEqual(r["verdict"], "clean")
 
 
+class ArchiveTests(unittest.TestCase):
+    def setUp(self):
+        self.sigs = scanner.load_signatures()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_eicar_inside_zip_is_malicious(self):
+        import zipfile
+        zp = self.dir / "bundle.zip"
+        with zipfile.ZipFile(zp, "w") as z:
+            z.writestr("readme.txt", "innocent")
+            z.writestr("payload/evil.txt", scanner.EICAR)
+        r = scanner.scan_file(zp, self.sigs)
+        self.assertEqual(r["verdict"], "malicious")
+        flagged = [m for m in r["members"] if m["verdict"] == "malicious"]
+        self.assertEqual(len(flagged), 1)
+        self.assertTrue(flagged[0]["path"].endswith("evil.txt"))
+
+    def test_eicar_inside_targz_is_malicious(self):
+        import io
+        import tarfile
+        tp = self.dir / "bundle.tgz"
+        with tarfile.open(tp, "w:gz") as t:
+            data = scanner.EICAR.encode()
+            info = tarfile.TarInfo("nested/evil.txt")
+            info.size = len(data)
+            t.addfile(info, io.BytesIO(data))
+        r = scanner.scan_file(tp, self.sigs)
+        self.assertEqual(r["verdict"], "malicious")
+
+    def test_clean_zip_stays_clean(self):
+        import zipfile
+        zp = self.dir / "clean.zip"
+        with zipfile.ZipFile(zp, "w") as z:
+            z.writestr("a.txt", "nothing to see")
+        r = scanner.scan_file(zp, self.sigs)
+        self.assertEqual(r["verdict"], "clean")
+
+    def test_oversized_member_is_flagged_without_reading(self):
+        # A member declaring a huge size must be flagged as a bomb, not extracted.
+        import zipfile
+        zp = self.dir / "bomb.zip"
+        with zipfile.ZipFile(zp, "w") as z:
+            z.writestr("big.bin", b"x")
+        members = scanner.scan_archive(zp, self.sigs)
+        # Force the guard by lowering the cap below the (tiny) real size.
+        orig = scanner.MAX_ARCHIVE_MEMBER_BYTES
+        scanner.MAX_ARCHIVE_MEMBER_BYTES = 0
+        try:
+            guarded = scanner.scan_archive(zp, self.sigs)
+        finally:
+            scanner.MAX_ARCHIVE_MEMBER_BYTES = orig
+        self.assertEqual(members[0]["verdict"], "clean")
+        self.assertEqual(guarded[0]["verdict"], "suspicious")
+        self.assertTrue(any("bomb" in d for d in guarded[0]["detections"]))
+
+
 class WalkQuarantineReportTests(unittest.TestCase):
     def setUp(self):
         self.sigs = scanner.load_signatures()

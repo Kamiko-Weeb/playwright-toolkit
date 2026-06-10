@@ -82,6 +82,12 @@ A real, working file scanner with four detection layers (cheapest → most expen
    hashes are checked against VirusTotal's reputation API. Works fully offline
    without a key.
 
+**Archive inspection** — `.zip`, `.jar` and `.tar(.gz)` files are opened in
+memory and each member is scanned individually, so malware hidden inside an
+archive is caught even though on-disk scanning would never see it. Extraction is
+bomb-guarded: oversized members or archives exceeding the total budget are flagged
+as suspicious instead of being expanded.
+
 Detected files can be copied into an isolated quarantine folder. **Nothing is
 ever executed** — files are only read, hashed and pattern-matched.
 
