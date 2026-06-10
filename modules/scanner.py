@@ -29,6 +29,7 @@ from config.settings import (
     CSV_DIR,
     LOGS_DIR,
     QUARANTINE_DIR,
+    RULES_DIR,
     SIGNATURES_FILE,
     VT_API_KEY,
 )
@@ -71,7 +72,29 @@ def load_signatures() -> dict:
     return {
         "hashes": sigs.get("hash_signatures", {}),
         "patterns": compiled,
+        "yara": load_yara_rules(),
     }
+
+
+def load_yara_rules():
+    """Compile any rules/*.yar — only if the optional yara-python lib is present.
+
+    Returns a compiled yara.Rules object, or None when YARA is unavailable or no
+    rule files exist. Never raises: a bad rule file just disables the layer.
+    """
+    try:
+        import yara
+    except ImportError:
+        return None
+
+    rule_files = sorted(RULES_DIR.glob("*.yar")) if RULES_DIR.exists() else []
+    if not rule_files:
+        return None
+    try:
+        return yara.compile(filepaths={p.stem: str(p) for p in rule_files})
+    except Exception as e:  # malformed rule — log and carry on without it
+        print(f"  YARA: skipping rules ({e})")
+        return None
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -156,6 +179,18 @@ def _evaluate(result: dict, sha_hex: str, body: bytes | None,
             result["detections"].append(
                 f"heuristic: high entropy {ent:.2f} on risky type {suffix}")
             _escalate(result, "suspicious")
+
+        # Layer 3.5 — optional YARA rules
+        rules = sigs.get("yara")
+        if rules is not None:
+            try:
+                for match in rules.match(data=body):
+                    sev = match.meta.get("severity", "suspicious")
+                    result["detections"].append(f"yara: {match.rule} ({sev})")
+                    _escalate(result, "malicious" if sev in ("malicious", "test")
+                              else "suspicious")
+            except Exception as e:
+                result["detections"].append(f"yara: match error ({e})")
 
     # Layer 4 — VirusTotal reputation
     if use_vt:
@@ -411,8 +446,9 @@ def cli(argv: list[str] | None = None) -> int:
 # ──────────────────────────────────────────────────────────────────────────
 def run():
     sigs = load_signatures()
+    yara_state = "on" if sigs.get("yara") is not None else "off (install yara-python)"
     print(f"\n  Loaded {len(sigs['hashes'])} hash + "
-          f"{len(sigs['patterns'])} pattern signatures.")
+          f"{len(sigs['patterns'])} pattern signatures · YARA {yara_state}.")
 
     choice = input("\n  Generate an EICAR test file first? [y/N]: ").strip().lower()
     default_target = make_eicar_sample().parent if choice == "y" else None

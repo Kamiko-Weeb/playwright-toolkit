@@ -153,6 +153,42 @@ class ArchiveTests(unittest.TestCase):
         self.assertTrue(any("bomb" in d for d in guarded[0]["detections"]))
 
 
+def _yara_available():
+    try:
+        import yara  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+class YaraTests(unittest.TestCase):
+    """Optional layer — skipped automatically when yara-python isn't installed."""
+
+    def setUp(self):
+        self.sigs = scanner.load_signatures()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_loader_returns_none_without_lib(self):
+        # Whatever the environment, load_yara_rules must never raise.
+        rules = scanner.load_yara_rules()
+        if _yara_available():
+            self.assertIsNotNone(rules)  # example.yar ships in rules/
+        else:
+            self.assertIsNone(rules)
+
+    @unittest.skipUnless(_yara_available(), "yara-python not installed")
+    def test_yara_flags_powershell_loader(self):
+        p = self.dir / "loader.ps1"
+        p.write_text('New-Object Net.WebClient; IEX(x.DownloadString("u"))')
+        r = scanner.scan_file(p, self.sigs)
+        self.assertEqual(r["verdict"], "suspicious")
+        self.assertTrue(any("yara:" in d for d in r["detections"]))
+
+
 class WalkQuarantineReportTests(unittest.TestCase):
     def setUp(self):
         self.sigs = scanner.load_signatures()

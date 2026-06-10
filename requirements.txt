@@ -1,3 +1,5 @@
 playwright>=1.44.0
 python-dotenv>=1.0.0
 requests>=2.31.0
+# Optional — enables the scanner's YARA rule layer. Safe to omit.
+# yara-python>=4.5.0

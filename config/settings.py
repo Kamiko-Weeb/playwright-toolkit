@@ -17,6 +17,8 @@ for _dir in [SCREENSHOTS_DIR, CSV_DIR, LOGS_DIR, DATA_DIR, QUARANTINE_DIR]:
 
 WATCHLIST_FILE = DATA_DIR / "watchlist.json"
 SIGNATURES_FILE = BASE_DIR / "config" / "signatures.json"
+# Optional YARA rules (*.yar). Used only if the `yara-python` package is installed.
+RULES_DIR = BASE_DIR / "rules"
 
 LOGIN_URL = os.getenv("LOGIN_URL", "")
 LOGIN_USERNAME = os.getenv("LOGIN_USERNAME", "")

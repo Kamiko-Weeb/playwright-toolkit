@@ -78,7 +78,11 @@ A real, working file scanner with four detection layers (cheapest → most expen
    droppers, encoded PowerShell, etc.).
 3. **Entropy heuristic** — Shannon entropy ≥ 7.2 bits/byte on a risky file type
    (`.exe`, `.dll`, `.ps1`, `.js` …) flags likely packed/encrypted payloads.
-4. **VirusTotal lookup** *(optional)* — if `VT_API_KEY` is set in `.env`, file
+4. **YARA rules** *(optional)* — if `yara-python` is installed, every `*.yar`
+   file in `rules/` becomes an extra detection layer. YARA is the format most
+   real threat-intel feeds ship in, so you can drop in community rules. A sample
+   `rules/example.yar` is included. Skipped cleanly when the library is absent.
+5. **VirusTotal lookup** *(optional)* — if `VT_API_KEY` is set in `.env`, file
    hashes are checked against VirusTotal's reputation API. Works fully offline
    without a key.
 
