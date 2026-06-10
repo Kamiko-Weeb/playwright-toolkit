@@ -232,6 +232,26 @@ class PEAnalyzerTests(unittest.TestCase):
         self.assertEqual(a["verdict"], "malicious")
         self.assertTrue(any("process-injection" in f for f in a["findings"]))
 
+    def test_imphash_matches_variants(self):
+        from modules import pe
+        from tests.pefix import build_pe
+        imports = {"KERNEL32.dll": ["LoadLibraryA", "GetProcAddress", "CreateFileA"]}
+        v1 = build_pe([(".text", b"A" * 400)], imports=imports)
+        v2 = build_pe([(".text", b"B" * 1600)], imports=imports)  # different bytes
+        h1, h2 = pe.analyze(v1)["imphash"], pe.analyze(v2)["imphash"]
+        self.assertIsNotNone(h1)
+        self.assertEqual(h1, h2)  # same imports → same imphash despite different files
+
+        # A family signature on that imphash flags both variants as malicious.
+        sigs = scanner.load_signatures()
+        sigs["imphashes"][h1] = "Demo.Family"
+        for i, blob in enumerate((v1, v2)):
+            p = self.dir / f"variant{i}.exe"
+            p.write_bytes(blob)
+            r = scanner.scan_file(p, sigs)
+            self.assertEqual(r["verdict"], "malicious")
+            self.assertTrue(any("imphash" in d for d in r["detections"]))
+
     def test_scan_file_surfaces_pe_findings(self):
         from tests.pefix import build_pe
         blob = build_pe([(".text", b"code" * 100)], imports={

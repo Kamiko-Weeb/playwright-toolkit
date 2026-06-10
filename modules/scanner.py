@@ -82,6 +82,7 @@ def load_signatures() -> dict:
 
     return {
         "hashes": sigs.get("hash_signatures", {}),
+        "imphashes": sigs.get("imphash_signatures", {}),
         "patterns": compiled,
         "yara": load_yara_rules(),
     }
@@ -211,13 +212,19 @@ def _evaluate(result: dict, sha_hex: str, body: bytes | None,
         if ftype == "PE":
             from modules import pe
             info = pe.analyze(body)
-            if info["findings"]:
-                result["pe"] = {"machine": info["machine"],
+            # Import-hash family match — catches variants with a new file hash.
+            imphash = info.get("imphash")
+            if imphash and imphash in sigs.get("imphashes", {}):
+                family = sigs["imphashes"][imphash]
+                result["detections"].append(f"imphash: {family} (variant match)")
+                _escalate(result, "malicious")
+            if info["findings"] or imphash:
+                result["pe"] = {"machine": info["machine"], "imphash": imphash,
                                 "sections": [s["name"] for s in info["sections"]],
                                 "findings": info["findings"]}
-                for f in info["findings"]:
-                    result["detections"].append(f"pe: {f}")
-                _escalate(result, info["verdict"])
+            for f in info["findings"]:
+                result["detections"].append(f"pe: {f}")
+            _escalate(result, info["verdict"])
 
         for sig in sigs["patterns"]:
             hit = ("needle" in sig and sig["needle"] in body) or (

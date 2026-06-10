@@ -19,6 +19,7 @@ result rather than raising.
 
 import struct
 from collections import Counter
+from hashlib import md5
 from math import log2
 
 # APIs grouped by capability. A single import is weak signal; a full group firing
@@ -74,7 +75,7 @@ def analyze(data: bytes) -> dict:
     it into the file's overall verdict). Never raises.
     """
     out = {"is_pe": False, "machine": None, "sections": [],
-           "imports": [], "findings": [], "verdict": "clean"}
+           "imports": [], "imphash": None, "findings": [], "verdict": "clean"}
     try:
         if not is_pe(data) or len(data) < 64:
             return out
@@ -133,6 +134,8 @@ def analyze(data: bytes) -> dict:
         # ── Imports ───────────────────────────────────────────────────
         imports = _parse_imports(data, sections, import_rva, import_size)
         out["imports"] = imports
+        if imports:
+            out["imphash"] = compute_imphash(imports)
         imported = {fn for _, fns in imports for fn in fns}
         hits_by_group = {}
         for group, apis in SUSPICIOUS_APIS.items():
@@ -205,10 +208,30 @@ def _parse_imports(data: bytes, sections: list[dict],
                 val = struct.unpack_from("<I", data, t)[0]
                 if val == 0:
                     break
-                if val & 0x80000000:  # import by ordinal — skip the name
+                if val & 0x80000000:  # import by ordinal — record as ord<N>
+                    funcs.append(f"ord{val & 0xffff}")
                     continue
                 hint_off = _rva_to_offset(val, sections)
                 if hint_off is not None and hint_off + 2 < len(data):
                     funcs.append(_read_cstr(data, hint_off + 2))
         result.append((dll, funcs))
     return result
+
+
+def compute_imphash(imports: list[tuple[str, list[str]]]) -> str:
+    """Import hash (Mandiant-style): MD5 over 'lib.func' pairs in import order.
+
+    Different malware samples built from the same source share an import table,
+    so they share an imphash even when their file hashes differ — letting one
+    signature catch a whole family / variants.
+    """
+    parts = []
+    for dll, funcs in imports:
+        lib = dll.lower()
+        for ext in (".dll", ".ocx", ".sys"):
+            if lib.endswith(ext):
+                lib = lib[:-4]
+                break
+        for fn in funcs:
+            parts.append(f"{lib}.{fn.lower()}")
+    return md5(",".join(parts).encode()).hexdigest()

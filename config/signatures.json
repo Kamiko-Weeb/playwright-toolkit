@@ -4,6 +4,8 @@
     "275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f": "EICAR-Test-File (standard antivirus test string)",
     "131f95c51cc819465fa1797f6ccacf9d494aaaff46fa3eac73ae63ffbdfd8267": "EICAR-Test-File (alt encoding)"
   },
+  "_imphash_comment": "Import-hash signatures catch whole malware families/variants: any PE whose import table hashes to one of these is flagged, even if its file hash is new. Add real imphashes from threat-intel feeds here.",
+  "imphash_signatures": {},
   "pattern_signatures": [
     {
       "name": "EICAR-Test-String",

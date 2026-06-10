@@ -98,6 +98,11 @@ no dependencies) to derive two signals:
 - **Capability** — the imported Win32 APIs reveal intent. Combinations like
   `VirtualAllocEx` + `WriteProcessMemory` + `CreateRemoteThread` (process injection)
   or `URLDownloadToFile` + `WinExec` (download-and-execute) are flagged as malicious.
+- **Variant detection (imphash)** — a Mandiant-style import hash of the PE's import
+  table. Different samples built from the same malware source share an import table,
+  so they share an imphash even when their file hashes differ — one `imphash_signatures`
+  entry catches a whole family. (Verified: two files with different SHA-256s but the
+  same imports both match.)
 
 **Archive inspection** — `.zip`, `.jar` and `.tar(.gz)` files are opened in
 memory and each member is scanned individually, so malware hidden inside an
