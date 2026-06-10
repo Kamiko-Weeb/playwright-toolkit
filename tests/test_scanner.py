@@ -332,15 +332,26 @@ class WalkQuarantineReportTests(unittest.TestCase):
         for f in new:  # clean up artifacts this test created
             f.unlink()
 
-    def test_report_writes_both_files(self):
+    def test_report_writes_all_three_files(self):
         results = scanner.scan_path(self.dir, self.sigs)
-        csv_path, json_path = scanner.save_report(results, self.dir)
+        csv_path, json_path, html_path = scanner.save_report(results, self.dir)
         try:
             self.assertTrue(Path(csv_path).exists())
             self.assertTrue(Path(json_path).exists())
+            self.assertTrue(Path(html_path).exists())
+            self.assertIn("<table", Path(html_path).read_text())
         finally:
-            Path(csv_path).unlink(missing_ok=True)
-            Path(json_path).unlink(missing_ok=True)
+            for p in (csv_path, json_path, html_path):
+                Path(p).unlink(missing_ok=True)
+
+    def test_parallel_and_serial_agree(self):
+        # Same verdicts whether scanned with 1 worker or many.
+        (self.dir / "eicar2.txt").write_text(scanner.EICAR)
+        serial = {Path(r["path"]).name: r["verdict"]
+                  for r in scanner.scan_path(self.dir, self.sigs, workers=1)}
+        parallel = {Path(r["path"]).name: r["verdict"]
+                    for r in scanner.scan_path(self.dir, self.sigs, workers=8)}
+        self.assertEqual(serial, parallel)
 
 
 class CliTests(unittest.TestCase):

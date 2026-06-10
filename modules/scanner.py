@@ -17,12 +17,15 @@ then scan. EICAR is a harmless 68-byte string every antivirus is built to flag.
 import csv
 import json
 import math
+import os
 import re
 import shutil
 import time
 from collections import Counter
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime
 from hashlib import md5, sha256
+from html import escape
 from pathlib import Path
 
 from config.settings import (
@@ -406,29 +409,71 @@ def _bomb(label: str, size: int, why: str) -> dict:
 # ──────────────────────────────────────────────────────────────────────────
 # Directory walk
 # ──────────────────────────────────────────────────────────────────────────
-def scan_path(target: Path, sigs: dict, use_vt: bool = False) -> list[dict]:
+def _report_hit(res: dict) -> None:
+    tag = res["verdict"].upper()
+    print(f"  [{tag}] {res['path']}")
+    for d in res["detections"]:
+        print(f"           └─ {d}")
+    for m in res.get("members", []):
+        if m["verdict"] != "clean":
+            print(f"           └─ inside: {Path(m['path']).name} "
+                  f"[{m['verdict']}] {'; '.join(m['detections'])}")
+
+
+# Each worker process loads its own signatures once (the compiled YARA rules
+# object can't be pickled and sent across the process boundary, so we rebuild it
+# in the child rather than ship it).
+_WORKER_SIGS: dict | None = None
+
+
+def _worker_init() -> None:
+    global _WORKER_SIGS
+    _WORKER_SIGS = load_signatures()
+
+
+def _worker_scan(path_str: str) -> dict:
+    return scan_file(Path(path_str), _WORKER_SIGS, use_vt=False)
+
+
+def scan_path(target: Path, sigs: dict, use_vt: bool = False,
+              workers: int | None = None) -> list[dict]:
     files = [target] if target.is_file() else [
         p for p in target.rglob("*")
         if p.is_file() and QUARANTINE_DIR not in p.parents
     ]
     total = len(files)
-    print(f"  Scanning {total} file(s) under {target} ...\n")
 
-    results = []
-    for i, fp in enumerate(files, 1):
-        res = scan_file(fp, sigs, use_vt=use_vt)
+    # The hot path (Shannon entropy) is pure-Python and GIL-bound, so threads
+    # don't help — only separate processes give real parallelism. VirusTotal is
+    # network-bound and rate-limited, so it runs serially. Small jobs aren't
+    # worth the process-startup overhead.
+    if workers is None:
+        workers = 1 if (use_vt or total <= 8) else min(8, os.cpu_count() or 2)
+    print(f"  Scanning {total} file(s) under {target} "
+          f"({workers} worker{'s' if workers != 1 else ''}) ...\n")
+
+    results: list[dict] = []
+    done = 0
+
+    def note(res: dict) -> None:
+        nonlocal done
         results.append(res)
         if res["verdict"] != "clean":
-            tag = res["verdict"].upper()
-            print(f"  [{tag}] {fp}")
-            for d in res["detections"]:
-                print(f"           └─ {d}")
-            for m in res.get("members", []):
-                if m["verdict"] != "clean":
-                    print(f"           └─ inside: {Path(m['path']).name} "
-                          f"[{m['verdict']}] {'; '.join(m['detections'])}")
-        if i % 50 == 0 or i == total:
-            print(f"  ...{i}/{total} scanned")
+            _report_hit(res)
+        done += 1
+        if done % 50 == 0 or done == total:
+            print(f"  ...{done}/{total} scanned")
+
+    if workers <= 1:
+        for fp in files:
+            note(scan_file(fp, sigs, use_vt=use_vt))
+    else:
+        with ProcessPoolExecutor(max_workers=workers,
+                                 initializer=_worker_init) as pool:
+            for fut in as_completed(
+                    [pool.submit(_worker_scan, str(fp)) for fp in files]):
+                note(fut.result())
+        results.sort(key=lambda r: r["path"])  # stable order regardless of timing
     return results
 
 
@@ -449,10 +494,11 @@ def quarantine(results: list[dict]) -> int:
     return moved
 
 
-def save_report(results: list[dict], target: Path) -> tuple[str, str]:
+def save_report(results: list[dict], target: Path) -> tuple[str, str, str]:
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     csv_path = CSV_DIR / f"scan_{ts}.csv"
     json_path = LOGS_DIR / f"scan_{ts}.json"
+    html_path = LOGS_DIR / f"scan_{ts}.html"
 
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
@@ -466,7 +512,56 @@ def save_report(results: list[dict], target: Path) -> tuple[str, str]:
                    "scanned_at": ts,
                    "results": results}, f, indent=2)
 
-    return str(csv_path), str(json_path)
+    _write_html(html_path, results, target, ts)
+    return str(csv_path), str(json_path), str(html_path)
+
+
+def _write_html(path: Path, results: list[dict], target: Path, ts: str) -> None:
+    counts = Counter(r["verdict"] for r in results)
+    flagged = [r for r in results if r["verdict"] in ("malicious", "suspicious")]
+    colour = {"malicious": "#c0392b", "suspicious": "#e67e22",
+              "clean": "#27ae60", "error": "#7f8c8d"}
+
+    def row(r):
+        dets = "<br>".join(escape(d) for d in r["detections"]) or "—"
+        members = "".join(
+            f"<div class='m'>↳ {escape(Path(m['path']).name)} "
+            f"<span style='color:{colour.get(m['verdict'], '#000')}'>"
+            f"[{m['verdict']}]</span> {escape('; '.join(m['detections']))}</div>"
+            for m in r.get("members", []) if m["verdict"] != "clean")
+        return (f"<tr><td class='p'>{escape(r['path'])}{members}</td>"
+                f"<td style='color:{colour.get(r['verdict'], '#000')};font-weight:600'>"
+                f"{r['verdict']}</td><td class='mono'>{escape(r['sha256'][:16])}</td>"
+                f"<td>{r['size']}</td><td>{r['entropy']}</td><td>{dets}</td></tr>")
+
+    rows = "\n".join(row(r) for r in (flagged or results))
+    html = f"""<!doctype html><meta charset="utf-8">
+<title>Scan report {ts}</title>
+<style>
+ body{{font:14px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;margin:2rem;color:#222}}
+ h1{{font-size:1.4rem}} .sub{{color:#666}}
+ .cards{{display:flex;gap:1rem;margin:1rem 0}}
+ .card{{padding:.8rem 1.2rem;border-radius:8px;color:#fff;font-weight:600}}
+ table{{border-collapse:collapse;width:100%;margin-top:1rem}}
+ th,td{{text-align:left;padding:.5rem .6rem;border-bottom:1px solid #eee;vertical-align:top}}
+ th{{background:#fafafa}} .p{{max-width:480px;word-break:break-all}}
+ .mono{{font-family:ui-monospace,Menlo,monospace;color:#555}}
+ .m{{font-size:12px;color:#555;margin-top:.2rem}}
+</style>
+<h1>Virus scan report</h1>
+<div class="sub">Target: {escape(str(target))} · {ts} · {len(results)} files scanned</div>
+<div class="cards">
+ <div class="card" style="background:#c0392b">Malicious {counts.get('malicious', 0)}</div>
+ <div class="card" style="background:#e67e22">Suspicious {counts.get('suspicious', 0)}</div>
+ <div class="card" style="background:#27ae60">Clean {counts.get('clean', 0)}</div>
+ <div class="card" style="background:#7f8c8d">Errors {counts.get('error', 0)}</div>
+</div>
+<p class="sub">{'Showing flagged files only.' if flagged else 'No threats found — showing all files.'}</p>
+<table><tr><th>Path</th><th>Verdict</th><th>SHA-256</th><th>Size</th>
+<th>Entropy</th><th>Detections</th></tr>
+{rows}
+</table>"""
+    path.write_text(html, encoding="utf-8")
 
 
 def make_eicar_sample() -> Path:
@@ -527,8 +622,8 @@ def cli(argv: list[str] | None = None) -> int:
         print(f"  Quarantined {moved} file(s) → {QUARANTINE_DIR}")
 
     if not args.no_report:
-        csv_path, json_path = save_report(results, target)
-        print(f"\n  Report: {csv_path}\n          {json_path}")
+        csv_path, json_path, html_path = save_report(results, target)
+        print(f"\n  Report: {csv_path}\n          {json_path}\n          {html_path}")
 
     # Exit non-zero when something was flagged — handy for scripts/CI.
     return 1 if counts.get("malicious") else 0
@@ -568,9 +663,10 @@ def run():
             moved = quarantine(results)
             print(f"  Quarantined {moved} file(s) → {QUARANTINE_DIR}")
 
-    csv_path, json_path = save_report(results, target)
+    csv_path, json_path, html_path = save_report(results, target)
     print(f"\n  Report: {csv_path}")
     print(f"          {json_path}")
+    print(f"          {html_path}")
 
 
 if __name__ == "__main__":
