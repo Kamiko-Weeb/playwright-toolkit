@@ -5,6 +5,8 @@ A modular browser automation toolkit built with Python + Playwright. Every modul
 > **Featured: a layered static malware scanner** (modules 7 & 8). For the full
 > design, evaluation and performance write-up, see [`docs/REPORT.md`](docs/REPORT.md).
 
+[![scanner tests](https://github.com/kamiko-weeb/playwright-toolkit/actions/workflows/scanner-tests.yml/badge.svg)](https://github.com/kamiko-weeb/playwright-toolkit/actions/workflows/scanner-tests.yml)
+
 ## Setup
 
 ```bash
