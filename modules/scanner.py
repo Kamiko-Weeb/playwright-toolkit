@@ -184,9 +184,13 @@ def vt_lookup(sha_hex: str) -> dict | None:
 # Per-file scan
 # ──────────────────────────────────────────────────────────────────────────
 def _escalate(result: dict, verdict: str) -> None:
-    """Raise the verdict only upward: clean → suspicious → malicious."""
+    """Raise the verdict only upward: clean → suspicious → malicious.
+
+    Unknown verdicts (e.g. 'error' from an unreadable archive member) have rank
+    0, so they never escalate — and never raise KeyError during member rollup.
+    """
     order = {"clean": 0, "suspicious": 1, "malicious": 2}
-    if order[verdict] > order.get(result["verdict"], 0):
+    if order.get(verdict, 0) > order.get(result["verdict"], 0):
         result["verdict"] = verdict
 
 
@@ -294,8 +298,12 @@ def scan_file(path: Path, sigs: dict, use_vt: bool = False) -> dict:
     if result["size"] <= MAX_PATTERN_SCAN_BYTES:
         try:
             body = path.read_bytes()
-        except (OSError, PermissionError):
-            body = b""
+        except (OSError, PermissionError) as e:
+            # Hashed fine but the body is unreadable — report it, don't pretend
+            # the content layers ran and call it clean.
+            result["verdict"] = "error"
+            result["detections"].append(f"unreadable body: {e}")
+            return result
 
     _evaluate(result, sha_hex, body, path.suffix.lower(), sigs, use_vt)
 
@@ -318,7 +326,10 @@ def _looks_like_archive(name: str, data: bytes) -> bool:
     suffix = "".join(Path(name).suffixes[-2:]).lower()
     if Path(name).suffix.lower() in ARCHIVE_EXTS or suffix in ARCHIVE_EXTS:
         return True
-    return detect_filetype(data) in ("ZIP", "GZIP")
+    if detect_filetype(data) in ("ZIP", "GZIP"):
+        return True
+    # tar has no leading magic — the "ustar" marker sits at offset 257.
+    return len(data) >= 262 and data[257:262] == b"ustar"
 
 
 def scan_archive(source, sigs: dict, use_vt: bool = False,
@@ -328,6 +339,7 @@ def scan_archive(source, sigs: dict, use_vt: bool = False,
     `source` may be a filesystem Path (top level) or raw bytes (a nested archive
     member). Recursion stops at MAX_ARCHIVE_DEPTH.
     """
+    import gzip
     import io
     import tarfile
     import zipfile
@@ -338,11 +350,14 @@ def scan_archive(source, sigs: dict, use_vt: bool = False,
     if isinstance(source, (str, Path)):
         path = Path(source)
         arc_label = label or path.name
+        raw = path.read_bytes() if path.stat().st_size <= MAX_ARCHIVE_MEMBER_BYTES \
+            else b""
         zip_src = lambda: zipfile.ZipFile(path)
         tar_src = lambda: tarfile.open(path)
         is_zip = zipfile.is_zipfile(path)
         is_tar = (not is_zip) and tarfile.is_tarfile(path)
     else:
+        raw = source
         arc_label = label or "<archive>"
         zip_src = lambda: zipfile.ZipFile(io.BytesIO(source))
         tar_src = lambda: tarfile.open(fileobj=io.BytesIO(source))
@@ -354,6 +369,9 @@ def scan_archive(source, sigs: dict, use_vt: bool = False,
                 is_tar = True
             except Exception:
                 is_tar = False
+    # tarfile transparently handles .tar.gz, so a gzip that isn't a tar is a
+    # single gzip-compressed file — decompress it and scan the inner content.
+    is_gzip = (not is_zip) and (not is_tar) and raw[:2] == b"\x1f\x8b"
 
     def consider(name: str, declared_size: int, reader) -> None:
         nonlocal budget
@@ -375,14 +393,15 @@ def scan_archive(source, sigs: dict, use_vt: bool = False,
         members.append(scan_bytes(mlabel, data, sigs, use_vt))
 
         # Recurse into nested archives, depth-limited.
-        if depth + 1 < MAX_ARCHIVE_DEPTH and _looks_like_archive(name, data):
-            members.extend(scan_archive(data, sigs, use_vt,
-                                        depth=depth + 1, label=mlabel))
-        elif depth + 1 >= MAX_ARCHIVE_DEPTH and _looks_like_archive(name, data):
-            members.append({"path": f"{mlabel}::<nested>", "size": 0, "sha256": "",
-                            "md5": "", "entropy": 0.0, "verdict": "suspicious",
-                            "detections": [f"archive: nesting deeper than "
-                                           f"{MAX_ARCHIVE_DEPTH} levels — possible bomb"]})
+        if _looks_like_archive(name, data):
+            if depth + 1 <= MAX_ARCHIVE_DEPTH:
+                members.extend(scan_archive(data, sigs, use_vt,
+                                            depth=depth + 1, label=mlabel))
+            else:
+                members.append({"path": f"{mlabel}::<nested>", "size": 0, "sha256": "",
+                                "md5": "", "entropy": 0.0, "verdict": "suspicious",
+                                "detections": [f"archive: nesting deeper than "
+                                               f"{MAX_ARCHIVE_DEPTH} levels — possible bomb"]})
 
     try:
         if is_zip:
@@ -398,7 +417,10 @@ def scan_archive(source, sigs: dict, use_vt: bool = False,
                     if not info.isfile():
                         continue
                     consider(info.name, info.size,
-                             lambda i=info, t=tf: t.extractfile(i).read())
+                             lambda i=info, t=tf: _tar_read(t, i))
+        elif is_gzip:
+            inner_name = Path(arc_label).stem or "gunzipped"
+            consider(inner_name, 0, lambda: _safe_gunzip(raw))
     except Exception as e:
         members.append({"path": f"{arc_label}::<archive>", "size": 0,
                         "sha256": "", "md5": "", "entropy": 0.0,
@@ -411,6 +433,24 @@ def scan_archive(source, sigs: dict, use_vt: bool = False,
 def _bomb(label: str, size: int, why: str) -> dict:
     return {"path": label, "size": size, "sha256": "", "md5": "", "entropy": 0.0,
             "verdict": "suspicious", "detections": [f"archive: {why} — possible bomb"]}
+
+
+def _tar_read(tf, info) -> bytes:
+    """Read a tar member, tolerating extractfile() returning None for odd members."""
+    f = tf.extractfile(info)
+    return f.read() if f is not None else b""
+
+
+def _safe_gunzip(raw: bytes) -> bytes:
+    """Decompress a gzip blob, but refuse to expand past the per-member cap
+    (guards against gzip bombs, since the declared size is unknown up front)."""
+    import gzip
+    import io
+    with gzip.GzipFile(fileobj=io.BytesIO(raw)) as g:
+        data = g.read(MAX_ARCHIVE_MEMBER_BYTES + 1)
+    if len(data) > MAX_ARCHIVE_MEMBER_BYTES:
+        raise ValueError("gzip expands beyond member size cap")
+    return data
 
 
 # ──────────────────────────────────────────────────────────────────────────

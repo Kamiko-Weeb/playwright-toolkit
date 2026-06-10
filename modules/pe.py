@@ -132,7 +132,8 @@ def analyze(data: bytes) -> dict:
                 out["verdict"] = "suspicious"
 
         # ── Imports ───────────────────────────────────────────────────
-        imports = _parse_imports(data, sections, import_rva, import_size)
+        imports = _parse_imports(data, sections, import_rva, import_size,
+                                 is_pe32_plus)
         out["imports"] = imports
         if imports:
             out["imphash"] = compute_imphash(imports)
@@ -143,12 +144,17 @@ def analyze(data: bytes) -> dict:
             if matched:
                 hits_by_group[group] = matched
 
-        # A full injection or download-exec combo is the strongest tell.
+        # A full injection or download-exec combo is the strongest tell; a
+        # single API from those groups is still worth a suspicious flag.
         for strong in ("process-injection", "download-and-execute"):
-            if len(hits_by_group.get(strong, [])) >= 2:
-                out["findings"].append(
-                    f"{strong} API combo: {', '.join(hits_by_group[strong])}")
+            matched = hits_by_group.get(strong, [])
+            if len(matched) >= 2:
+                out["findings"].append(f"{strong} API combo: {', '.join(matched)}")
                 out["verdict"] = "malicious"
+            elif len(matched) == 1:
+                out["findings"].append(f"{strong} API: {matched[0]}")
+                if out["verdict"] == "clean":
+                    out["verdict"] = "suspicious"
         for group, matched in hits_by_group.items():
             if group not in ("process-injection", "download-and-execute"):
                 out["findings"].append(f"{group} API: {', '.join(matched)}")
@@ -177,7 +183,8 @@ def _read_cstr(data: bytes, off: int, limit: int = 256) -> str:
 
 
 def _parse_imports(data: bytes, sections: list[dict],
-                   import_rva: int, import_size: int) -> list[tuple[str, list[str]]]:
+                   import_rva: int, import_size: int,
+                   is_pe32_plus: bool = False) -> list[tuple[str, list[str]]]:
     """Walk the import directory → [(dll_name, [function names]), ...]. Best-effort."""
     result: list[tuple[str, list[str]]] = []
     if not import_rva:
@@ -185,6 +192,13 @@ def _parse_imports(data: bytes, sections: list[dict],
     base = _rva_to_offset(import_rva, sections)
     if base is None:
         return result
+
+    # Thunk width and the by-ordinal flag differ between PE32 (4-byte thunks,
+    # bit 31) and PE32+ (8-byte thunks, bit 63). The name-table RVA always lives
+    # in the low 32 bits.
+    thunk_size = 8 if is_pe32_plus else 4
+    thunk_fmt = "<Q" if is_pe32_plus else "<I"
+    ordinal_flag = 0x8000000000000000 if is_pe32_plus else 0x80000000
 
     # Each import descriptor is 20 bytes; table ends at an all-zero descriptor.
     for i in range(256):  # hard cap on number of imported DLLs
@@ -202,16 +216,16 @@ def _parse_imports(data: bytes, sections: list[dict],
         funcs: list[str] = []
         if thunk_off is not None:
             for j in range(2048):  # cap functions per DLL
-                t = thunk_off + j * 4  # 32-bit thunks (good enough for name extraction)
-                if t + 4 > len(data):
+                t = thunk_off + j * thunk_size
+                if t + thunk_size > len(data):
                     break
-                val = struct.unpack_from("<I", data, t)[0]
+                val = struct.unpack_from(thunk_fmt, data, t)[0]
                 if val == 0:
                     break
-                if val & 0x80000000:  # import by ordinal — record as ord<N>
+                if val & ordinal_flag:  # import by ordinal — record as ord<N>
                     funcs.append(f"ord{val & 0xffff}")
                     continue
-                hint_off = _rva_to_offset(val, sections)
+                hint_off = _rva_to_offset(val & 0xFFFFFFFF, sections)
                 if hint_off is not None and hint_off + 2 < len(data):
                     funcs.append(_read_cstr(data, hint_off + 2))
         result.append((dll, funcs))

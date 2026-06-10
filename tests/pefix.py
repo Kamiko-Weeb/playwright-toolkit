@@ -5,13 +5,21 @@ tested without shipping real executables."""
 import struct
 
 
-def build_pe(sections, imports=None) -> bytes:
-    """sections: list of (name, body_bytes). imports: {dll: [func, ...]}."""
+def build_pe(sections, imports=None, pe32_plus=False) -> bytes:
+    """sections: list of (name, body_bytes). imports: {dll: [func, ...]}.
+
+    pe32_plus=True emits a 64-bit (PE32+) binary: magic 0x20b, data directories
+    at optional-header offset 112, and 8-byte import thunks.
+    """
     e_lfanew = 0x40
     dos = bytearray(0x40)
     dos[0:2] = b"MZ"
     struct.pack_into("<I", dos, 0x3C, e_lfanew)
-    opt_size = 0xE0
+    opt_size = 0xF0 if pe32_plus else 0xE0
+    dd_base = 112 if pe32_plus else 96
+    thunk_size = 8 if pe32_plus else 4
+    thunk_fmt = "<Q" if pe32_plus else "<I"
+    magic = 0x20b if pe32_plus else 0x10b
 
     secs = list(sections)
     sec_table_off = e_lfanew + 4 + 20 + opt_size
@@ -40,22 +48,23 @@ def build_pe(sections, imports=None) -> bytes:
                     tail += b"\x00"
                 hint_offs.append(desc_area + len(tail))
                 tail += struct.pack("<H", 0) + fn.encode() + b"\x00"
-            while (desc_area + len(tail)) % 4:
+            while (desc_area + len(tail)) % thunk_size:
                 tail += b"\x00"
             ilt_k = desc_area + len(tail)
             for ho in hint_offs:
-                tail += struct.pack("<I", V + ho)
-            tail += struct.pack("<I", 0)
+                tail += struct.pack(thunk_fmt, V + ho)
+            tail += struct.pack(thunk_fmt, 0)
             descriptors += struct.pack("<IIIII", V + ilt_k, 0, 0, V + name_k, V + ilt_k)
         descriptors += b"\x00" * 20
         placed.append([".idata", bytes(descriptors + tail), V, R])
         import_rva, import_size = V, desc_area
 
-    coff = struct.pack("<HHIIIHH", 0x14c, len(placed), 0, 0, 0, opt_size, 0x102)
+    coff = struct.pack("<HHIIIHH", 0x8664 if pe32_plus else 0x14c,
+                       len(placed), 0, 0, 0, opt_size, 0x102)
     opt = bytearray(opt_size)
-    struct.pack_into("<H", opt, 0, 0x10b)
+    struct.pack_into("<H", opt, 0, magic)
     if import_rva:
-        struct.pack_into("<II", opt, 96 + 8, import_rva, import_size)
+        struct.pack_into("<II", opt, dd_base + 8, import_rva, import_size)
 
     sec_entries = bytearray()
     body_area = bytearray()

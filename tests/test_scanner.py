@@ -232,6 +232,31 @@ class PEAnalyzerTests(unittest.TestCase):
         self.assertEqual(a["verdict"], "malicious")
         self.assertTrue(any("process-injection" in f for f in a["findings"]))
 
+    def test_x64_pe_imports_are_parsed(self):
+        # Regression: 8-byte (PE32+) thunks must be read with the right stride,
+        # otherwise only the first imported function per DLL is seen.
+        from modules import pe
+        from tests.pefix import build_pe
+        blob = build_pe([(".text", b"code" * 100)], imports={
+            "KERNEL32.dll": ["VirtualAllocEx", "WriteProcessMemory",
+                             "CreateRemoteThread"]}, pe32_plus=True)
+        a = pe.analyze(blob)
+        self.assertEqual(a["machine"], "x64")
+        funcs = [fn for _, fns in a["imports"] for fn in fns]
+        self.assertIn("WriteProcessMemory", funcs)
+        self.assertIn("CreateRemoteThread", funcs)
+        self.assertEqual(a["verdict"], "malicious")
+
+    def test_single_injection_api_is_suspicious(self):
+        # Regression: a lone injection API used to produce no finding at all.
+        from modules import pe
+        from tests.pefix import build_pe
+        blob = build_pe([(".text", b"code" * 100)],
+                        imports={"KERNEL32.dll": ["CreateRemoteThread"]})
+        a = pe.analyze(blob)
+        self.assertEqual(a["verdict"], "suspicious")
+        self.assertTrue(any("process-injection" in f for f in a["findings"]))
+
     def test_imphash_matches_variants(self):
         from modules import pe
         from tests.pefix import build_pe
@@ -321,6 +346,27 @@ class NestedArchiveTests(unittest.TestCase):
         deep = [m for m in r["members"] if m["path"].endswith("nested.zip::evil.txt")]
         self.assertEqual(len(deep), 1)
         self.assertEqual(deep[0]["verdict"], "malicious")
+
+    def test_eicar_in_plain_gzip_is_found(self):
+        # Regression: a plain .gz (not a tar.gz) must have its content scanned.
+        import gzip
+        p = self.dir / "evil.txt.gz"
+        p.write_bytes(gzip.compress(scanner.EICAR.encode()))
+        r = scanner.scan_file(p, self.sigs)
+        self.assertEqual(r["verdict"], "malicious")
+
+    def test_corrupt_archive_member_does_not_crash(self):
+        # Regression: an 'error'-verdict member used to raise KeyError in the
+        # verdict rollup (_escalate). Truncated zip member → error, not crash.
+        import zipfile
+        z = self.dir / "broken.zip"
+        with zipfile.ZipFile(z, "w") as zf:
+            zf.writestr("good.txt", "fine")
+        raw = bytearray(z.read_bytes())
+        raw[-6] ^= 0xFF  # corrupt the central directory / data
+        z.write_bytes(bytes(raw))
+        r = scanner.scan_file(z, self.sigs)  # must not raise
+        self.assertIn(r["verdict"], ("clean", "suspicious", "malicious", "error"))
 
 
 class WalkQuarantineReportTests(unittest.TestCase):

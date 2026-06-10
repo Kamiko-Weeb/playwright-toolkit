@@ -63,6 +63,7 @@ if __name__ == "__main__":
         sys.exit(scanner.cli(sys.argv[2:]))
     if len(sys.argv) > 1 and sys.argv[1] == "eval":
         from modules import evaluate
-        evaluate.run()
-        sys.exit(0)
+        m = evaluate.run()
+        # Real gate: fail if the detector missed a threat or raised a false alarm.
+        sys.exit(1 if (m["fn"] or m["fp"]) else 0)
     main()
