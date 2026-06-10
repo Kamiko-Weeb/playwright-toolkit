@@ -1,5 +1,8 @@
 import sys
-from modules import scraper, form_bot, monitor, crawler, steam_scraper, amazon_scraper
+from modules import (
+    scraper, form_bot, monitor, crawler,
+    steam_scraper, amazon_scraper, scanner,
+)
 
 MENU = """
 ╔════════════════════════════════════════════════════════╗
@@ -11,6 +14,7 @@ MENU = """
 ║  4.  Crawler   — multi-page link crawler               ║
 ║  5.  Steam     — scrape game prices & discounts        ║
 ║  6.  Amazon.ca — scrape product prices & stock         ║
+║  7.  Scanner   — signature & heuristic virus scanner   ║
 ║  0.  Exit                                              ║
 ╚════════════════════════════════════════════════════════╝"""
 
@@ -21,6 +25,7 @@ MODULES = {
     "4": ("Crawler",          crawler.run),
     "5": ("Steam Scraper",    steam_scraper.run),
     "6": ("Amazon Scraper",   amazon_scraper.run),
+    "7": ("Virus Scanner",    scanner.run),
 }
 
 

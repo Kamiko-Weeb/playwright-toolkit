@@ -68,13 +68,42 @@ Prompts for: start URL, max pages, max depth.
 
 ---
 
+### 7. Virus Scanner (`modules/scanner.py`)
+A real, working file scanner with four detection layers (cheapest → most expensive):
+
+1. **Hash signatures** — SHA-256/MD5 of each file is compared against a known-bad
+   hash database (`config/signatures.json`).
+2. **Pattern signatures** — the file body is scanned for documented byte/regex
+   indicators (embedded PE headers, `eval(base64_decode(...))`, `curl … | bash`
+   droppers, encoded PowerShell, etc.).
+3. **Entropy heuristic** — Shannon entropy ≥ 7.2 bits/byte on a risky file type
+   (`.exe`, `.dll`, `.ps1`, `.js` …) flags likely packed/encrypted payloads.
+4. **VirusTotal lookup** *(optional)* — if `VT_API_KEY` is set in `.env`, file
+   hashes are checked against VirusTotal's reputation API. Works fully offline
+   without a key.
+
+Detected files can be copied into an isolated quarantine folder. **Nothing is
+ever executed** — files are only read, hashed and pattern-matched.
+
+**Prove it works:** at the prompt, choose *generate EICAR test file*. EICAR is the
+industry-standard harmless 68-byte string every antivirus is built to detect — the
+scanner flags it by both hash and pattern, so you can verify detection without
+touching real malware.
+
+Prompts for: whether to drop an EICAR sample, path to scan (file or folder),
+whether to use VirusTotal, and whether to quarantine hits.
+Saves a CSV + JSON report. Extend detection by editing `config/signatures.json`.
+
+---
+
 ## Output
 
 | Folder | Contents |
 |---|---|
-| `output/csv/` | Scraper results |
+| `output/csv/` | Scraper results, scan reports |
 | `output/screenshots/` | Monitor captures |
-| `output/logs/` | Crawler reports |
+| `output/logs/` | Crawler reports, scan JSON |
+| `output/quarantine/` | Isolated copies of flagged files |
 
 All output is gitignored.
 

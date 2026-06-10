@@ -1,0 +1,45 @@
+{
+  "_comment": "Local signature database for the virus scanner. Hash signatures are SHA-256 of known-bad files. Pattern signatures are byte/string indicators scanned inside files. This is a teaching database, not a production feed — extend it freely.",
+  "hash_signatures": {
+    "275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f": "EICAR-Test-File (standard antivirus test string)",
+    "131f95c51cc819465fa1797f6ccacf9d494aaaff46fa3eac73ae63ffbdfd8267": "EICAR-Test-File (alt encoding)"
+  },
+  "pattern_signatures": [
+    {
+      "name": "EICAR-Test-String",
+      "severity": "test",
+      "description": "The literal EICAR test pattern — harmless, used to verify scanners work.",
+      "bytes_hex": "58354f2150254041505b345c505a58353428505e2937434329377d244549434152"
+    },
+    {
+      "name": "Heur.Eval-Base64-Decode",
+      "severity": "suspicious",
+      "description": "eval() wrapping a base64 decode — common in obfuscated PHP/JS droppers.",
+      "regex": "eval\\s*\\(\\s*base64_decode\\s*\\("
+    },
+    {
+      "name": "Heur.PowerShell-EncodedCommand",
+      "severity": "suspicious",
+      "description": "PowerShell launched with a hidden, base64-encoded command block.",
+      "regex": "powershell(\\.exe)?.{0,40}-(enc|encodedcommand|e)\\s"
+    },
+    {
+      "name": "Heur.PowerShell-DownloadString",
+      "severity": "suspicious",
+      "description": "In-memory download-and-execute via Net.WebClient.",
+      "regex": "(New-Object\\s+Net\\.WebClient|DownloadString|IEX\\s*\\()"
+    },
+    {
+      "name": "Heur.Shell-Curl-Pipe-Bash",
+      "severity": "suspicious",
+      "description": "Pipe a remote script straight into a shell — classic dropper one-liner.",
+      "regex": "(curl|wget)\\s+[^|]*\\|\\s*(sh|bash)"
+    },
+    {
+      "name": "Heur.Windows-PE-In-Script",
+      "severity": "suspicious",
+      "description": "An MZ/PE header embedded inside a text/script file (dropped executable).",
+      "bytes_hex": "4d5a90000300000004000000ffff0000"
+    }
+  ]
+}
