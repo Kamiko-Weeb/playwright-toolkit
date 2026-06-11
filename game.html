@@ -1,0 +1,627 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Planet Conquest</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #000; overflow: hidden; user-select: none; -webkit-user-select: none; }
+canvas { display: block; }
+
+#hud {
+  position: fixed; top: 0; left: 0; right: 0; height: 46px;
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 20px;
+  background: rgba(4, 4, 18, 0.85);
+  border-bottom: 1px solid rgba(80, 100, 200, 0.15);
+  pointer-events: none; z-index: 10;
+  font-family: 'Courier New', monospace;
+}
+.hud-side { display: flex; align-items: center; gap: 18px; font-size: 13px; font-weight: bold; }
+.hud-blue { color: #4af; }
+.hud-red  { color: #f55; }
+.hud-stat { display: flex; flex-direction: column; line-height: 1.3; }
+.hud-stat .lbl { font-size: 9px; opacity: 0.55; text-transform: uppercase; letter-spacing: 1px; }
+.hud-icon { font-size: 20px; }
+.hud-center { color: rgba(140,160,255,0.4); font-size: 11px; letter-spacing: 4px; text-transform: uppercase; }
+
+#overlay {
+  display: none; position: fixed; inset: 0; z-index: 20;
+  background: rgba(0,0,0,0.82);
+  flex-direction: column; align-items: center; justify-content: center; gap: 22px;
+  font-family: 'Courier New', monospace;
+}
+#ov-title { font-size: 52px; font-weight: bold; letter-spacing: 6px; text-shadow: 0 0 30px currentColor; }
+#ov-sub   { font-size: 14px; color: rgba(255,255,255,0.45); letter-spacing: 2px; }
+#overlay button {
+  margin-top: 8px; padding: 12px 44px;
+  font-family: 'Courier New', monospace; font-size: 15px; font-weight: bold;
+  letter-spacing: 2px; color: #fff; background: transparent;
+  border: 2px solid rgba(255,255,255,0.45); border-radius: 3px; cursor: pointer;
+  transition: all 0.15s;
+}
+#overlay button:hover { background: rgba(255,255,255,0.1); border-color: #fff; }
+
+#tip {
+  position: fixed; bottom: 12px; left: 50%; transform: translateX(-50%);
+  font-family: 'Courier New', monospace; font-size: 11px;
+  color: rgba(140,160,220,0.3); pointer-events: none; white-space: nowrap;
+}
+</style>
+</head>
+<body>
+<canvas id="canvas"></canvas>
+
+<div id="hud">
+  <div class="hud-side hud-blue">
+    <span class="hud-icon">🔵</span>
+    <div class="hud-stat">
+      <span class="lbl">Planets</span>
+      <span id="bp">—</span>
+    </div>
+    <div class="hud-stat">
+      <span class="lbl">Troops</span>
+      <span id="bt">—</span>
+    </div>
+  </div>
+  <div class="hud-center">Planet Conquest</div>
+  <div class="hud-side hud-red">
+    <div class="hud-stat" style="text-align:right">
+      <span class="lbl">Troops</span>
+      <span id="rt">—</span>
+    </div>
+    <div class="hud-stat" style="text-align:right">
+      <span class="lbl">Planets</span>
+      <span id="rp">—</span>
+    </div>
+    <span class="hud-icon">🔴</span>
+  </div>
+</div>
+
+<div id="overlay">
+  <div id="ov-title">VICTORY</div>
+  <div id="ov-sub">The galaxy is yours.</div>
+  <button onclick="startGame()">PLAY AGAIN</button>
+</div>
+
+<div id="tip">Select your planet · Click target to send troops · Right-click to cancel</div>
+
+<script>
+'use strict';
+
+const canvas = document.getElementById('canvas');
+const ctx    = canvas.getContext('2d');
+
+function resize() {
+  canvas.width  = window.innerWidth;
+  canvas.height = window.innerHeight;
+}
+resize();
+
+// ── Config ────────────────────────────────────────────────────────────────────
+
+const CFG = {
+  nPlanets:   16,
+  minDist:    98,
+  prodFactor: 0.0082,   // troops / sec / radius-px
+  fleetSpeed: 108,      // px / sec
+  botTick:    1550,     // ms between bot decisions
+  sendFrac:   0.60,     // fraction of troops to send on player action
+  botSendFrac:0.70,
+};
+
+// ── State ─────────────────────────────────────────────────────────────────────
+
+let planets, fleets, stars, impacts;
+let selected, gameOver, botTimer, lastTime, elapsed;
+let mouseX = -999, mouseY = -999;
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+const hypot = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+const rng   = (lo, hi) => lo + Math.random() * (hi - lo);
+const irng  = (lo, hi) => Math.floor(rng(lo, hi + 1));
+
+// ── Initialisation ────────────────────────────────────────────────────────────
+
+function startGame() {
+  planets  = [];
+  fleets   = [];
+  impacts  = [];
+  selected = null;
+  gameOver = false;
+  botTimer = 0;
+  lastTime = 0;
+  elapsed  = 0;
+
+  makeStars();
+  makeMap();
+  updateHUD();
+  document.getElementById('overlay').style.display = 'none';
+  requestAnimationFrame(loop);
+}
+
+function makeStars() {
+  const W = canvas.width, H = canvas.height;
+  const n = Math.floor(W * H / 3200);
+  stars = Array.from({ length: n }, () => ({
+    x: rng(0, W), y: rng(0, H),
+    r: rng(0.2, 1.9),
+    phase: rng(0, Math.PI * 2),
+    freq:  rng(0.4, 1.8),
+  }));
+}
+
+function makeMap() {
+  const W = canvas.width, H = canvas.height;
+  const pad = 70, hud = 50;
+
+  const add = (x, y, r, owner, troops) =>
+    planets.push({ id: planets.length, x, y, r, owner, troops,
+                   production: r * CFG.prodFactor, connections: [],
+                   phase: rng(0, Math.PI * 2) });
+
+  // Symmetrically opposed home planets
+  add(pad + 25,       hud + pad,      38, 'player', 20);
+  add(W - pad - 25,   H - pad - 25,   38, 'bot',    20);
+
+  // Neutral planets
+  let tries = 0;
+  while (planets.length < CFG.nPlanets && tries < 10000) {
+    tries++;
+    const r = rng(13, 27);
+    const x = rng(pad + r, W - pad - r);
+    const y = rng(hud + pad + r, H - pad - r);
+    if (planets.every(p => hypot(p, { x, y }) >= CFG.minDist))
+      add(x, y, r, 'neutral', irng(3, Math.floor(r * 0.65) + 4));
+  }
+
+  buildEdges();
+}
+
+function buildEdges() {
+  const n = planets.length;
+
+  // Prim's MST — guarantees connectivity
+  const inT  = new Set([0]);
+  const mstEdges = [];
+  while (inT.size < n) {
+    let best = Infinity, bA = -1, bB = -1;
+    for (const a of inT)
+      for (let b = 0; b < n; b++)
+        if (!inT.has(b)) {
+          const d = hypot(planets[a], planets[b]);
+          if (d < best) { best = d; bA = a; bB = b; }
+        }
+    mstEdges.push([bA, bB]);
+    inT.add(bB);
+  }
+
+  // Apply MST edges first (mandatory)
+  for (const [a, b] of mstEdges) {
+    planets[a].connections.push(b);
+    planets[b].connections.push(a);
+  }
+
+  // Extra short-range edges, up to 5 connections per planet
+  const extras = [];
+  for (let i = 0; i < n; i++)
+    for (let j = i + 1; j < n; j++) {
+      const d = hypot(planets[i], planets[j]);
+      if (d < 195) extras.push([i, j, d]);
+    }
+  extras.sort((a, b) => a[2] - b[2]);
+
+  const alreadyLinked = new Set(mstEdges.map(([a,b]) => `${Math.min(a,b)}_${Math.max(a,b)}`));
+  for (const [a, b] of extras) {
+    const k = `${Math.min(a,b)}_${Math.max(a,b)}`;
+    if (alreadyLinked.has(k)) continue;
+    if (planets[a].connections.length >= 5 || planets[b].connections.length >= 5) continue;
+    alreadyLinked.add(k);
+    planets[a].connections.push(b);
+    planets[b].connections.push(a);
+  }
+}
+
+// ── Input ─────────────────────────────────────────────────────────────────────
+
+function handlePointer(mx, my) {
+  if (gameOver) return;
+  const hit = planets.find(p => hypot(p, { x: mx, y: my }) <= p.r + 3);
+
+  if (!hit) { selected = null; return; }
+
+  if (selected && hit.id !== selected.id) {
+    sendTroops(selected, hit, 'player', CFG.sendFrac);
+    selected = null;
+  } else if (hit.owner === 'player') {
+    selected = selected?.id === hit.id ? null : hit;
+  } else {
+    selected = null;
+  }
+}
+
+canvas.addEventListener('click', e => {
+  const r = canvas.getBoundingClientRect();
+  handlePointer(e.clientX - r.left, e.clientY - r.top);
+});
+
+canvas.addEventListener('touchstart', e => {
+  e.preventDefault();
+  const r = canvas.getBoundingClientRect();
+  const t = e.touches[0];
+  handlePointer(t.clientX - r.left, t.clientY - r.top);
+}, { passive: false });
+
+canvas.addEventListener('contextmenu', e => { e.preventDefault(); selected = null; });
+
+canvas.addEventListener('mousemove', e => {
+  const r = canvas.getBoundingClientRect();
+  mouseX = e.clientX - r.left;
+  mouseY = e.clientY - r.top;
+
+  // cursor style
+  const hit = planets.find(p => hypot(p, { x: mouseX, y: mouseY }) <= p.r + 3);
+  canvas.style.cursor = hit ? 'pointer' : 'default';
+});
+
+// ── Fleet / Combat ────────────────────────────────────────────────────────────
+
+function sendTroops(from, to, owner, frac) {
+  const n = Math.floor(from.troops * frac);
+  if (n < 1) return;
+  from.troops -= n;
+  const d = Math.max(1, hypot(from, to));
+  fleets.push({
+    owner, troops: n,
+    fromId: from.id, toId: to.id,
+    x: from.x, y: from.y,
+    dx: (to.x - from.x) / d, dy: (to.y - from.y) / d,
+    dist: d, traveled: 0,
+  });
+}
+
+function arrive(fleet) {
+  const t = planets[fleet.toId];
+  if (t.owner === fleet.owner) {
+    t.troops += fleet.troops;
+  } else {
+    t.troops -= fleet.troops;
+    if (t.troops < 0) {
+      t.owner  = fleet.owner;
+      t.troops = -t.troops;
+    }
+  }
+  const col = fleet.owner === 'player' ? '#44aaff' : '#ff5555';
+  impacts.push({ x: t.x, y: t.y, r: t.r, age: 0, col });
+}
+
+// ── Bot AI ────────────────────────────────────────────────────────────────────
+
+function botThink() {
+  const mine = planets.filter(p => p.owner === 'bot');
+  if (!mine.length) return;
+
+  // Tally incoming enemy troops per planet
+  const incoming = {};
+  for (const f of fleets)
+    if (f.owner !== 'bot')
+      incoming[f.toId] = (incoming[f.toId] ?? 0) + f.troops;
+
+  // Reinforce threatened bot planets
+  for (const thr of mine) {
+    const threat = incoming[thr.id] ?? 0;
+    if (threat > thr.troops * 0.7) {
+      const helper = mine
+        .filter(q => q.id !== thr.id && q.troops > 18)
+        .sort((a, b) => hypot(a, thr) - hypot(b, thr))[0];
+      if (helper) { sendTroops(helper, thr, 'bot', 0.5); return; }
+    }
+  }
+
+  // Attack: pick the best (src, target) pair
+  const enemies = planets.filter(p => p.owner !== 'bot');
+  if (!enemies.length) return;
+
+  mine.sort((a, b) => b.troops - a.troops);
+
+  for (const src of mine) {
+    if (src.troops < 10) continue;
+
+    let best = null, bestScore = -Infinity;
+    for (const tgt of enemies) {
+      const needed = tgt.troops * 1.3 + 5;
+      if (src.troops < needed) continue;
+
+      // Score: value of capturing minus cost minus distance
+      let score = tgt.production * 120 - tgt.troops - hypot(src, tgt) * 0.025;
+      if (tgt.owner === 'neutral') score += 12;
+      if (tgt.owner === 'player' && tgt.id === 0) score += 20; // pressure home
+      if (score > bestScore) { bestScore = score; best = tgt; }
+    }
+    if (best) { sendTroops(src, best, 'bot', CFG.botSendFrac); return; }
+  }
+}
+
+// ── Update ────────────────────────────────────────────────────────────────────
+
+function update(dt) {
+  elapsed  += dt;
+  botTimer += dt;
+
+  if (botTimer * 1000 >= CFG.botTick) {
+    botTimer = 0;
+    botThink();
+  }
+
+  if (selected && selected.owner !== 'player') selected = null;
+
+  for (const p of planets)
+    if (p.owner !== 'neutral') p.troops += p.production * dt;
+
+  for (let i = fleets.length - 1; i >= 0; i--) {
+    const f = fleets[i];
+    const step = CFG.fleetSpeed * dt;
+    f.traveled += step;
+    f.x += f.dx * step;
+    f.y += f.dy * step;
+    if (f.traveled >= f.dist) { arrive(f); fleets.splice(i, 1); }
+  }
+
+  for (let i = impacts.length - 1; i >= 0; i--) {
+    impacts[i].age += dt;
+    if (impacts[i].age > 0.55) impacts.splice(i, 1);
+  }
+
+  const pp = planets.filter(p => p.owner === 'player').length;
+  const bp = planets.filter(p => p.owner === 'bot').length;
+  const pf = fleets.filter(f => f.owner === 'player').length;
+  const bf = fleets.filter(f => f.owner === 'bot').length;
+
+  if (!pp && !pf) endGame(false);
+  else if (!bp && !bf) endGame(true);
+
+  updateHUD();
+}
+
+function endGame(won) {
+  gameOver = true;
+  document.getElementById('ov-title').textContent = won ? '★  VICTORY  ★' : '✗  DEFEAT  ✗';
+  document.getElementById('ov-title').style.color = won ? '#4af' : '#f55';
+  document.getElementById('ov-sub').textContent   = won ? 'The galaxy is yours.' : 'Your empire has fallen.';
+  document.getElementById('overlay').style.display = 'flex';
+}
+
+function updateHUD() {
+  const pp = planets.filter(p => p.owner === 'player');
+  const bp = planets.filter(p => p.owner === 'bot');
+  document.getElementById('bp').textContent = pp.length;
+  document.getElementById('bt').textContent = Math.floor(pp.reduce((s, p) => s + p.troops, 0));
+  document.getElementById('rp').textContent = bp.length;
+  document.getElementById('rt').textContent = Math.floor(bp.reduce((s, p) => s + p.troops, 0));
+}
+
+// ── Rendering ─────────────────────────────────────────────────────────────────
+
+const PAL = {
+  player:  { lo: '#072070', mid: '#2070ee', hi: '#70b8ff', glow: '#44aaff' },
+  bot:     { lo: '#600808', mid: '#cc2828', hi: '#ff7070', glow: '#ff5555' },
+  neutral: { lo: '#181828', mid: '#404058', hi: '#8888a0', glow: '#8888aa' },
+};
+
+function draw() {
+  const W = canvas.width, H = canvas.height;
+
+  // Space background
+  ctx.fillStyle = '#060612';
+  ctx.fillRect(0, 0, W, H);
+
+  // Vignette
+  const vig = ctx.createRadialGradient(W/2, H/2, H * 0.15, W/2, H/2, H * 0.95);
+  vig.addColorStop(0, 'transparent');
+  vig.addColorStop(1, 'rgba(0,0,8,0.55)');
+  ctx.fillStyle = vig;
+  ctx.fillRect(0, 0, W, H);
+
+  drawStars();
+  drawEdges();
+  drawTargetLine();
+  drawImpacts();
+  drawPlanets();
+  drawFleets();
+}
+
+function drawStars() {
+  for (const s of stars) {
+    const a = 0.18 + 0.55 * (0.5 + 0.5 * Math.sin(elapsed * s.freq + s.phase));
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(200,215,255,${a.toFixed(2)})`;
+    ctx.fill();
+  }
+}
+
+function drawEdges() {
+  const seen = new Set();
+  for (const p of planets) {
+    for (const id of p.connections) {
+      const k = `${Math.min(p.id,id)}_${Math.max(p.id,id)}`;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      const q = planets[id];
+
+      // Shared-owner edges glow faintly
+      const sameOwner = p.owner !== 'neutral' && p.owner === q.owner;
+      const col = sameOwner
+        ? (p.owner === 'player' ? 'rgba(40,100,220,0.22)' : 'rgba(180,30,30,0.22)')
+        : 'rgba(100,110,190,0.09)';
+
+      ctx.beginPath();
+      ctx.moveTo(p.x, p.y);
+      ctx.lineTo(q.x, q.y);
+      ctx.strokeStyle = col;
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+  }
+}
+
+function drawTargetLine() {
+  if (!selected) return;
+  const hovered = planets.find(p => hypot(p, { x: mouseX, y: mouseY }) <= p.r + 3);
+  const target = hovered && hovered.id !== selected.id ? hovered : null;
+
+  // Line from selected to mouse (or to hovered planet)
+  const ex = target ? target.x : mouseX;
+  const ey = target ? target.y : mouseY;
+
+  ctx.save();
+  ctx.setLineDash([6, 5]);
+  ctx.beginPath();
+  ctx.moveTo(selected.x, selected.y);
+  ctx.lineTo(ex, ey);
+  ctx.strokeStyle = target
+    ? (target.owner === 'player' ? 'rgba(100,200,255,0.5)' : 'rgba(255,160,60,0.6)')
+    : 'rgba(255,255,255,0.2)';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.restore();
+}
+
+function drawImpacts() {
+  for (const imp of impacts) {
+    const t = imp.age / 0.55;
+    ctx.globalAlpha = (1 - t) * 0.7;
+    ctx.beginPath();
+    ctx.arc(imp.x, imp.y, imp.r * (1 + t * 2.2), 0, Math.PI * 2);
+    ctx.strokeStyle = imp.col;
+    ctx.lineWidth = 3;
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+}
+
+function drawPlanets() {
+  for (const p of planets) {
+    const pal   = PAL[p.owner];
+    const pulse = 1 + 0.024 * Math.sin(elapsed * 1.35 + p.phase);
+    const pr    = p.r * pulse;
+    const isSel = selected?.id === p.id;
+
+    // Outer glow halo
+    const halo = ctx.createRadialGradient(p.x, p.y, pr * 0.5, p.x, p.y, pr * 2.6);
+    halo.addColorStop(0, pal.glow + (isSel ? '44' : '22'));
+    halo.addColorStop(1, 'transparent');
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, pr * 2.6, 0, Math.PI * 2);
+    ctx.fillStyle = halo;
+    ctx.fill();
+
+    // Planet body
+    const body = ctx.createRadialGradient(
+      p.x - pr * 0.32, p.y - pr * 0.32, pr * 0.04,
+      p.x, p.y, pr
+    );
+    body.addColorStop(0, pal.hi);
+    body.addColorStop(0.55, pal.mid);
+    body.addColorStop(1, pal.lo);
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, pr, 0, Math.PI * 2);
+    ctx.fillStyle = body;
+    ctx.fill();
+
+    // Rim highlight
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, pr, 0, Math.PI * 2);
+    ctx.strokeStyle = pal.glow + '60';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    // Selection ring (pulsing)
+    if (isSel) {
+      const sp = 1 + 0.09 * Math.sin(elapsed * 7);
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, (pr + 7) * sp, 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(255,255,255,0.8)';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      // Faint ring on all other planets (valid targets)
+      for (const tgt of planets) {
+        if (tgt.id === p.id) continue;
+        ctx.beginPath();
+        ctx.arc(tgt.x, tgt.y, tgt.r + 4, 0, Math.PI * 2);
+        ctx.strokeStyle = tgt.owner === 'player'
+          ? 'rgba(100,180,255,0.25)'
+          : 'rgba(255,200,80,0.25)';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      }
+    }
+
+    // Troop count
+    const fs = Math.max(9, Math.min(16, pr * 0.52));
+    ctx.font = `bold ${fs}px "Courier New", monospace`;
+    ctx.textAlign     = 'center';
+    ctx.textBaseline  = 'middle';
+    ctx.shadowColor   = pal.glow;
+    ctx.shadowBlur    = 5;
+    ctx.fillStyle     = p.owner === 'neutral' ? '#bbbbc8' : '#ffffff';
+    ctx.fillText(Math.floor(p.troops), p.x, p.y);
+    ctx.shadowBlur = 0;
+
+    // Orbiting production dots
+    if (p.owner !== 'neutral') {
+      const ndots = Math.min(8, Math.ceil(p.production * 90 + 0.5));
+      for (let i = 0; i < ndots; i++) {
+        const a = (i / ndots) * Math.PI * 2 + elapsed * 0.85;
+        ctx.beginPath();
+        ctx.arc(p.x + Math.cos(a) * (pr + 7), p.y + Math.sin(a) * (pr + 7), 2, 0, Math.PI * 2);
+        ctx.fillStyle = '#3ffa7f';
+        ctx.fill();
+      }
+    }
+  }
+}
+
+function drawFleets() {
+  for (const f of fleets) {
+    const col = f.owner === 'player' ? '#44aaff' : '#ff5555';
+
+    ctx.shadowColor = col;
+    ctx.shadowBlur  = 8;
+    ctx.beginPath();
+    ctx.arc(f.x, f.y, 4, 0, Math.PI * 2);
+    ctx.fillStyle = col;
+    ctx.fill();
+    ctx.shadowBlur = 0;
+
+    if (f.troops >= 3) {
+      ctx.font = 'bold 10px "Courier New", monospace';
+      ctx.textAlign    = 'center';
+      ctx.textBaseline = 'bottom';
+      ctx.fillStyle    = col;
+      ctx.fillText(Math.ceil(f.troops), f.x, f.y - 7);
+    }
+  }
+}
+
+// ── Loop ──────────────────────────────────────────────────────────────────────
+
+function loop(ts) {
+  if (!lastTime) lastTime = ts;
+  const dt = Math.min((ts - lastTime) / 1000, 0.05);
+  lastTime = ts;
+
+  draw();
+  if (!gameOver) update(dt);
+
+  requestAnimationFrame(loop);
+}
+
+startGame();
+</script>
+</body>
+</html>
