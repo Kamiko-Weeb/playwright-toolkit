@@ -1,6 +1,6 @@
 -- ============================================================================
 --  Plots (Vaults) — the heart of the game. Owns vault state and every action
---  that touches it: assigning vaults, rolling/placing/selling/fusing Stashlings,
+--  that touches it: assigning vaults, rolling/placing/selling/fusing Brainrots,
 --  accruing Loot, timed locking, ascending, snatch streaks, and SNATCHING.
 --
 --  A pedestal slot holds an entry: { id = string, golden = boolean }.
@@ -9,7 +9,7 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Config = require(ReplicatedStorage.Shared.Config)
-local Stashlings = require(ReplicatedStorage.Shared.Stashlings)
+local Brainrots = require(ReplicatedStorage.Shared.Brainrots)
 local Format = require(ReplicatedStorage.Shared.Format)
 local Data = require(script.Parent.Data)
 local Monetization = require(script.Parent.Monetization)
@@ -36,7 +36,7 @@ end
 
 -- The Loot/sec a single pedestal entry produces (before player multipliers).
 local function slotIncome(entry): number
-	local def = Stashlings.get(entry.id)
+	local def = Brainrots.get(entry.id)
 	if not def then
 		return 0
 	end
@@ -73,7 +73,7 @@ end
 local GOLD = Color3.fromRGB(255, 215, 60)
 
 local function makeUnit(def, podium: BasePart, locked: boolean, golden: boolean): (Model, ProximityPrompt)
-	local baseColor = Stashlings.rarityColor(def.rarity)
+	local baseColor = Brainrots.rarityColor(def.rarity)
 	local bodyColor = golden and GOLD or baseColor
 
 	local model = Instance.new("Model")
@@ -187,7 +187,7 @@ end
 
 local function placeOnSlot(index: number, slot: number, id: string, golden: boolean)
 	local s = state[index]
-	local def = Stashlings.get(id)
+	local def = Brainrots.get(id)
 	if not def then
 		return
 	end
@@ -307,7 +307,7 @@ function Plots.rollCost(player: Player): number
 	return math.floor(Config.BaseRollCost * Config.RollCostGrowth ^ filled)
 end
 
--- A snapshot of the player's Stashlings for the client's Vault panel.
+-- A snapshot of the player's Brainrots for the client's Vault panel.
 function Plots.creaturesList(player: Player)
 	local index = playerPlot[player]
 	if not index then
@@ -318,7 +318,7 @@ function Plots.creaturesList(player: Player)
 	for slot = 1, Config.SlotsPerPlot do
 		local entry = s.slots[slot]
 		if entry then
-			local def = Stashlings.get(entry.id)
+			local def = Brainrots.get(entry.id)
 			if def then
 				table.insert(list, {
 					slot = slot,
@@ -401,7 +401,7 @@ function Plots.sellCommons(player: Player): number
 	for slot = 1, Config.SlotsPerPlot do
 		local entry = s.slots[slot]
 		if entry and not entry.golden then
-			local def = Stashlings.get(entry.id)
+			local def = Brainrots.get(entry.id)
 			if def and def.rarity == "Common" then
 				total += math.floor(slotIncome(entry) * Config.SellMultiplier)
 				removeFromSlot(index, slot)
@@ -419,7 +419,7 @@ function Plots.sellCommons(player: Player): number
 end
 
 -- Fusion --------------------------------------------------------------------
--- Merge Config.Fusion.count identical (non-golden) Stashlings into one Golden.
+-- Merge Config.Fusion.count identical (non-golden) Brainrots into one Golden.
 function Plots.fuse(player: Player, id: string): (boolean, any)
 	local index = playerPlot[player]
 	if not index then
@@ -444,7 +444,7 @@ function Plots.fuse(player: Player, id: string): (boolean, any)
 		placeOnSlot(index, free, id, true)
 	end
 	Plots.updateSign(index)
-	return true, Stashlings.get(id)
+	return true, Brainrots.get(id)
 end
 
 -- Rolling -------------------------------------------------------------------
@@ -465,7 +465,7 @@ function Plots.roll(player: Player): (boolean, any, string?)
 		return false, nil, "Not enough Loot"
 	end
 	data.cash -= cost
-	local def = Stashlings.roll(nil)
+	local def = Brainrots.roll(nil)
 	Plots.placeCreature(player, def.id, false)
 	return true, def, nil
 end
@@ -481,7 +481,7 @@ function Plots.luckyRoll(player: Player)
 		notify(player, "Vault full — got $" .. Config.LuckyRollFullFallbackCash .. " instead!", GOLD)
 		return nil
 	end
-	local def = Stashlings.roll(Stashlings.HighRarities)
+	local def = Brainrots.roll(Brainrots.HighRarities)
 	Plots.placeCreature(player, def.id, false)
 	return def
 end
@@ -550,15 +550,15 @@ function Plots.handleSteal(thief: Player, victimIndex: number, slot: number)
 		return
 	end
 
-	local def = Stashlings.get(entry.id)
+	local def = Brainrots.get(entry.id)
 	local golden = entry.golden or false
 	removeFromSlot(victimIndex, slot)
 	placeOnSlot(thiefIndex, freeSlot, entry.id, golden)
 
 	Plots.registerSnatch(thief)
 
-	local name = ((golden and "✨ Golden " or "") .. (def and def.name or "a Stashling"))
-	local color = def and Stashlings.rarityColor(def.rarity) or nil
+	local name = ((golden and "✨ Golden " or "") .. (def and def.name or "a Brainrot"))
+	local color = def and Brainrots.rarityColor(def.rarity) or nil
 	local streakN = Plots.streakCount(thief)
 	local thiefMsg = "You snatched " .. name .. " from " .. victim.Name .. "!"
 	if streakN > 1 then
@@ -670,7 +670,7 @@ function Plots.assign(player: Player): number?
 					-- tolerate the legacy string format
 					local id = type(entry) == "table" and entry.id or entry
 					local golden = type(entry) == "table" and entry.golden or false
-					if id and Stashlings.get(id) and firstFreeSlot(index) then
+					if id and Brainrots.get(id) and firstFreeSlot(index) then
 						Plots.placeCreature(player, id, golden)
 					end
 				end

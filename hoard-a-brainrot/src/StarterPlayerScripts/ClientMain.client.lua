@@ -11,7 +11,7 @@ local TweenService = game:GetService("TweenService")
 
 local Config = require(ReplicatedStorage.Shared.Config)
 local Format = require(ReplicatedStorage.Shared.Format)
-local Stashlings = require(ReplicatedStorage.Shared.Stashlings)
+local Brainrots = require(ReplicatedStorage.Shared.Brainrots)
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
@@ -79,7 +79,7 @@ local snapshot: any = nil
 local displayCash = 0
 
 local gui = create("ScreenGui", {
-	Name = "StashlingsUI",
+	Name = "HoardABrainrotUI",
 	ResetOnSpawn = false,
 	ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
 	IgnoreGuiInset = true,
@@ -370,10 +370,10 @@ local function rebuildVault()
 		end
 	end
 
-	-- Per-Stashling rows with a Sell button
+	-- Per-Brainrot rows with a Sell button
 	for _, c in creatures do
 		order += 1
-		local rarityColor = Stashlings.rarityColor(c.rarity)
+		local rarityColor = Brainrots.rarityColor(c.rarity)
 		local row = create("Frame", {
 			Size = UDim2.new(1, 0, 0, 56),
 			BackgroundColor3 = COLORS.row,
@@ -480,7 +480,7 @@ local ascendInfo = create("TextLabel", {
 	TextScaled = true,
 	TextXAlignment = Enum.TextXAlignment.Left,
 	TextYAlignment = Enum.TextYAlignment.Top,
-	Text = "Ascending resets your Loot and Stashlings for a permanent income boost.",
+	Text = "Ascending resets your Loot and Brainrots for a permanent income boost.",
 	TextWrapped = true,
 	Parent = ascendInfoFrame,
 })
@@ -593,24 +593,24 @@ local function playReveal(result)
 	-- result = { name, rarity, lucky }
 	if revealActive then
 		-- Overlapping roll: skip the animation but still give feedback.
-		showToast(("Got %s (%s)!"):format(result.name, result.rarity), Stashlings.rarityColor(result.rarity))
+		showToast(("Got %s (%s)!"):format(result.name, result.rarity), Brainrots.rarityColor(result.rarity))
 		return
 	end
 	revealActive = true
 	revealOverlay.Visible = true
 
 	task.spawn(function()
-		local n = #Stashlings.List
+		local n = #Brainrots.List
 		for i = 1, 15 do
-			local fake = Stashlings.List[math.random(1, n)]
+			local fake = Brainrots.List[math.random(1, n)]
 			revealName.Text = fake.name
-			revealName.TextColor3 = Stashlings.rarityColor(fake.rarity)
+			revealName.TextColor3 = Brainrots.rarityColor(fake.rarity)
 			revealRarity.Text = fake.rarity
-			revealStroke.Color = Stashlings.rarityColor(fake.rarity)
+			revealStroke.Color = Brainrots.rarityColor(fake.rarity)
 			task.wait(0.04 + i * 0.007) -- decelerate
 		end
 
-		local color = Stashlings.rarityColor(result.rarity)
+		local color = Brainrots.rarityColor(result.rarity)
 		revealName.Text = (result.lucky and "✨ " or "") .. result.name
 		revealName.TextColor3 = color
 		revealRarity.Text = result.rarity .. (result.lucky and "  —  LUCKY!" or "")
@@ -685,7 +685,7 @@ local function refresh()
 
 	-- Ascend panel
 	local nextMult = snapshot.rebirthMultiplier + Config.Rebirth.multiplierPerRebirth
-	ascendInfo.Text = ("Tier: %d   (x%.2f income)\n\nNext ascension costs $%s and raises you to x%.2f income.\n\nResets your Loot & Stashlings."):format(
+	ascendInfo.Text = ("Tier: %d   (x%.2f income)\n\nNext ascension costs $%s and raises you to x%.2f income.\n\nResets your Loot & Brainrots."):format(
 		snapshot.rebirths,
 		snapshot.rebirthMultiplier,
 		Format.abbreviate(snapshot.rebirthCost),

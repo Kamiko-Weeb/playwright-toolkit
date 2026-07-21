@@ -1,17 +1,17 @@
 -- ============================================================================
---  Stashlings — the collectible critters, their rarities, and roll logic.
+--  Brainrots — the collectible critters, their rarities, and roll logic.
 --
 --  Original placeholder critters (simple colored blocks with a name tag) so
 --  you can ship today. Swap in real models later by editing WorldBuilder/Plots
 --  — just keep the `id`, `rarity`, and `income`.
 -- ============================================================================
-local Stashlings = {}
+local Brainrots = {}
 
 local rng = Random.new()
 
 -- Rarity table. `weight` drives roll odds (higher = more common). `color`
 -- tints the unit + its glow.
-Stashlings.Rarities = {
+Brainrots.Rarities = {
 	Common = { color = Color3.fromRGB(180, 184, 196), weight = 55 },
 	Rare = { color = Color3.fromRGB(80, 140, 255), weight = 25 },
 	Epic = { color = Color3.fromRGB(170, 90, 255), weight = 12 },
@@ -19,10 +19,10 @@ Stashlings.Rarities = {
 	Mythic = { color = Color3.fromRGB(255, 70, 120), weight = 2.5 },
 	Secret = { color = Color3.fromRGB(40, 255, 200), weight = 0.5 },
 }
-Stashlings.RarityOrder = { "Common", "Rare", "Epic", "Legendary", "Mythic", "Secret" }
+Brainrots.RarityOrder = { "Common", "Rare", "Epic", "Legendary", "Mythic", "Secret" }
 
 -- income = cash/sec this unit generates while on a base.
-Stashlings.List = {
+Brainrots.List = {
 	{ id = "gloopy_goose", name = "Gloopy Goose", rarity = "Common", income = 5 },
 	{ id = "turbo_toad", name = "Turbo Toad", rarity = "Common", income = 8 },
 	{ id = "sussy_snail", name = "Sussy Snail", rarity = "Common", income = 12 },
@@ -41,19 +41,19 @@ Stashlings.List = {
 -- Lookups --------------------------------------------------------------------
 local byId = {}
 local byRarity = {}
-for _, def in Stashlings.List do
+for _, def in Brainrots.List do
 	byId[def.id] = def
 	byRarity[def.rarity] = byRarity[def.rarity] or {}
 	table.insert(byRarity[def.rarity], def)
 end
-Stashlings.byId = byId
+Brainrots.byId = byId
 
-function Stashlings.get(id: string)
+function Brainrots.get(id: string)
 	return byId[id]
 end
 
-function Stashlings.rarityColor(rarity: string): Color3
-	local r = Stashlings.Rarities[rarity]
+function Brainrots.rarityColor(rarity: string): Color3
+	local r = Brainrots.Rarities[rarity]
 	return r and r.color or Color3.fromRGB(200, 200, 200)
 end
 
@@ -61,15 +61,15 @@ end
 -- to restrict the pool (used by the Lucky Roll product).
 local function rollRarity(allowed: { [string]: boolean }?): string
 	local total = 0
-	for _, r in Stashlings.RarityOrder do
+	for _, r in Brainrots.RarityOrder do
 		if not allowed or allowed[r] then
-			total += Stashlings.Rarities[r].weight
+			total += Brainrots.Rarities[r].weight
 		end
 	end
 	local pick = rng:NextNumber() * total
-	for _, r in Stashlings.RarityOrder do
+	for _, r in Brainrots.RarityOrder do
 		if not allowed or allowed[r] then
-			pick -= Stashlings.Rarities[r].weight
+			pick -= Brainrots.Rarities[r].weight
 			if pick <= 0 then
 				return r
 			end
@@ -78,14 +78,14 @@ local function rollRarity(allowed: { [string]: boolean }?): string
 	return "Common"
 end
 
--- Returns a random Stashling def. Pass an `allowed` set to restrict rarities.
-function Stashlings.roll(allowed: { [string]: boolean }?)
+-- Returns a random Brainrot def. Pass an `allowed` set to restrict rarities.
+function Brainrots.roll(allowed: { [string]: boolean }?)
 	local rarity = rollRarity(allowed)
 	local pool = byRarity[rarity]
 	return pool[rng:NextInteger(1, #pool)]
 end
 
 -- Rarities counted as "Legendary or better" for the Lucky Roll product.
-Stashlings.HighRarities = { Legendary = true, Mythic = true, Secret = true }
+Brainrots.HighRarities = { Legendary = true, Mythic = true, Secret = true }
 
-return Stashlings
+return Brainrots

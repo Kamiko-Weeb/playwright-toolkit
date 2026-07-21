@@ -7,7 +7,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 
 local Config = require(ReplicatedStorage.Shared.Config)
-local Stashlings = require(ReplicatedStorage.Shared.Stashlings)
+local Brainrots = require(ReplicatedStorage.Shared.Brainrots)
 local Data = require(script.Parent.Data)
 local Monetization = require(script.Parent.Monetization)
 local Leaderboard = require(script.Parent.Leaderboard)

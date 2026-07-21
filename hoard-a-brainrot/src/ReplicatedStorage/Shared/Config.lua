@@ -1,5 +1,5 @@
 -- ============================================================================
---  Stashlings — central configuration (shared by server + clients).
+--  Hoard a Brainrot — central configuration (shared by server + clients).
 --
 --  MONETIZATION: create the Game Passes / Developer Products in Roblox, then
 --  paste their numeric IDs below. Any id left as 0 is simply ignored (no error).
@@ -20,17 +20,17 @@ Config.SlotsPerPlot = 9 -- pedestals per Vault
 
 -- Economy ---------------------------------------------------------------------
 Config.StartingCash = 100
--- Every Stashling you own makes your next roll pricier — which is exactly why
--- SNATCHING (free Stashlings) is the smart play.
+-- Every Brainrot you own makes your next roll pricier — which is exactly why
+-- SNATCHING (free Brainrots) is the smart play.
 Config.BaseRollCost = 50
-Config.RollCostGrowth = 1.18 -- ^ (number of Stashlings you own)
+Config.RollCostGrowth = 1.18 -- ^ (number of Brainrots you own)
 
 -- Selling ---------------------------------------------------------------------
--- Sell value of a Stashling = its income/sec * this. Lets you clear junk for Loot.
+-- Sell value of a Brainrot = its income/sec * this. Lets you clear junk for Loot.
 Config.SellMultiplier = 15
 
 -- Fusion ----------------------------------------------------------------------
--- Merge this many identical Stashlings into one GOLDEN Stashling that earns
+-- Merge this many identical Brainrots into one GOLDEN Brainrot that earns
 -- `multiplier` times as much (and glows). Duplicates become valuable.
 Config.Fusion = {
 	count = 3,
@@ -57,7 +57,7 @@ Config.StealRange = 12
 Config.LockDuration = 60
 
 -- Ascension (prestige) --------------------------------------------------------
--- Reset your Loot + Stashlings for a permanent income multiplier.
+-- Reset your Loot + Brainrots for a permanent income multiplier.
 Config.Rebirth = {
 	baseCost = 100000, -- banked Loot needed for your first ascension
 	costGrowth = 5, -- cost multiplies each ascension

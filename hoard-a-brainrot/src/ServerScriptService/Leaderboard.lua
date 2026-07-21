@@ -4,7 +4,7 @@
 local DataStoreService = game:GetService("DataStoreService")
 local Players = game:GetService("Players")
 
-local ordered = DataStoreService:GetOrderedDataStore("Stashlings_Leaderboard_v1")
+local ordered = DataStoreService:GetOrderedDataStore("HoardABrainrot_Leaderboard_v1")
 
 local Leaderboard = {}
 

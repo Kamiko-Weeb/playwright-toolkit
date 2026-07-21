@@ -6,7 +6,7 @@ local DataStoreService = game:GetService("DataStoreService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Config = require(ReplicatedStorage.Shared.Config)
 
-local store = DataStoreService:GetDataStore("Stashlings_PlayerData_v1")
+local store = DataStoreService:GetDataStore("HoardABrainrot_PlayerData_v1")
 
 local Data = {}
 
