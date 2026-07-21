@@ -1,13 +1,14 @@
 -- ============================================================================
 --  Plots — the heart of the game. Owns plot state and every action that
 --  touches it: assigning bases, placing/rolling brainrots, accruing income,
---  collecting, and STEALING between players.
+--  collecting, timed base locking, rebirthing, and STEALING between players.
 -- ============================================================================
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Config = require(ReplicatedStorage.Shared.Config)
 local Brainrots = require(ReplicatedStorage.Shared.Brainrots)
+local Format = require(ReplicatedStorage.Shared.Format)
 local Data = require(script.Parent.Data)
 local Monetization = require(script.Parent.Monetization)
 
@@ -16,7 +17,11 @@ local Plots = {}
 -- Physical descriptors from WorldBuilder, indexed by plot number.
 local world: { any } = {}
 -- Server-authoritative state per plot index.
--- state[i] = { owner: Player?, uncollected: number, slots: {[slot]=defId}, units: {[slot]=Model} }
+-- state[i] = {
+--   owner: Player?, uncollected: number,
+--   slots: {[slot]=defId}, units: {[slot]=Model},
+--   lockedUntil: number?, lockedApplied: boolean,
+-- }
 local state: { any } = {}
 -- Quick reverse lookup.
 local playerPlot: { [Player]: number } = {}
@@ -33,8 +38,37 @@ function Plots.plotIndexOf(player: Player): number?
 	return playerPlot[player]
 end
 
+-- Locking -------------------------------------------------------------------
+-- A base is locked while the Base Lock pass is owned (permanent) OR the timed
+-- lock from the pad is still active.
+function Plots.isLocked(index: number): boolean
+	local s = state[index]
+	if not s or not s.owner then
+		return false
+	end
+	if Monetization.owns(s.owner, "BaseLock") then
+		return true
+	end
+	return s.lockedUntil ~= nil and os.clock() < s.lockedUntil
+end
+
+-- Seconds of timed lock remaining (0 if none). Permanent lock returns math.huge.
+function Plots.lockRemaining(index: number): number
+	local s = state[index]
+	if not s or not s.owner then
+		return 0
+	end
+	if Monetization.owns(s.owner, "BaseLock") then
+		return math.huge
+	end
+	if s.lockedUntil and os.clock() < s.lockedUntil then
+		return math.ceil(s.lockedUntil - os.clock())
+	end
+	return 0
+end
+
 -- Unit visuals --------------------------------------------------------------
-local function makeUnit(owner: Player, def, podium: BasePart): (Model, ProximityPrompt)
+local function makeUnit(def, podium: BasePart, locked: boolean): (Model, ProximityPrompt)
 	local rarityColor = Brainrots.rarityColor(def.rarity)
 
 	local model = Instance.new("Model")
@@ -96,14 +130,14 @@ local function makeUnit(owner: Player, def, podium: BasePart): (Model, Proximity
 	incomeLabel.Text = def.rarity .. "  •  $" .. def.income .. "/s"
 	incomeLabel.Parent = tag
 
-	-- Steal prompt. Disabled when the owner has the Base Lock pass.
+	-- Steal prompt. Disabled while the base is locked.
 	local prompt = Instance.new("ProximityPrompt")
 	prompt.ActionText = "Steal"
 	prompt.ObjectText = def.name
 	prompt.HoldDuration = Config.StealHoldSeconds
 	prompt.MaxActivationDistance = Config.StealRange
 	prompt.RequiresLineOfSight = false
-	prompt.Enabled = not Monetization.owns(owner, "BaseLock")
+	prompt.Enabled = not locked
 	prompt.Parent = body
 
 	model.Parent = podium
@@ -133,7 +167,22 @@ local function countFilled(index: number): number
 	return n
 end
 
--- Places a brainrot on a specific free slot of a plot. Wires the steal prompt.
+-- Enable/disable every steal prompt on a plot to match its lock state.
+local function applyLockToPrompts(index: number)
+	local locked = Plots.isLocked(index)
+	local s = state[index]
+	for slot = 1, Config.SlotsPerPlot do
+		local unit = s.units[slot]
+		if unit then
+			local body = unit:FindFirstChild("Body")
+			local prompt = body and body:FindFirstChildOfClass("ProximityPrompt")
+			if prompt then
+				prompt.Enabled = not locked
+			end
+		end
+	end
+end
+
 local function placeOnSlot(index: number, slot: number, defId: string)
 	local s = state[index]
 	local def = Brainrots.get(defId)
@@ -141,8 +190,7 @@ local function placeOnSlot(index: number, slot: number, defId: string)
 		return
 	end
 	local podium = world[index].podiums[slot]
-	local owner = s.owner
-	local model, prompt = makeUnit(owner, def, podium)
+	local model, prompt = makeUnit(def, podium, Plots.isLocked(index))
 	s.slots[slot] = defId
 	s.units[slot] = model
 
@@ -160,7 +208,6 @@ local function removeFromSlot(index: number, slot: number)
 	s.slots[slot] = nil
 end
 
--- Public: place on first free slot of a player's plot. Returns true on success.
 function Plots.placeBrainrot(player: Player, defId: string): boolean
 	local index = playerPlot[player]
 	if not index then
@@ -174,7 +221,18 @@ function Plots.placeBrainrot(player: Player, defId: string): boolean
 	return true
 end
 
--- Economy -------------------------------------------------------------------
+-- Multipliers & income ------------------------------------------------------
+function Plots.rebirthMultiplier(player: Player): number
+	local data = Data.get(player)
+	local rebirths = (data and data.rebirths) or 0
+	return 1 + rebirths * Config.Rebirth.multiplierPerRebirth
+end
+
+-- Combined income multiplier: game passes (2x, VIP) * rebirth bonus.
+function Plots.totalMultiplier(player: Player): number
+	return Monetization.multiplier(player) * Plots.rebirthMultiplier(player)
+end
+
 function Plots.baseIncome(index: number): number
 	local s = state[index]
 	local total = 0
@@ -195,7 +253,7 @@ function Plots.incomePerSecond(player: Player): number
 	if not index then
 		return 0
 	end
-	return Plots.baseIncome(index) * Monetization.multiplier(player)
+	return Plots.baseIncome(index) * Plots.totalMultiplier(player)
 end
 
 function Plots.slotsInfo(player: Player): (number, number)
@@ -216,7 +274,7 @@ end
 function Plots.tick(dt: number)
 	for index, s in state do
 		if s.owner then
-			local gain = Plots.baseIncome(index) * Monetization.multiplier(s.owner) * dt
+			local gain = Plots.baseIncome(index) * Plots.totalMultiplier(s.owner) * dt
 			if gain > 0 then
 				if Monetization.owns(s.owner, "AutoCollect") then
 					local data = Data.get(s.owner)
@@ -231,7 +289,6 @@ function Plots.tick(dt: number)
 	end
 end
 
--- Bank a plot's uncollected pile into the owner's cash. Returns amount banked.
 function Plots.collect(player: Player): number
 	local index = playerPlot[player]
 	if not index then
@@ -248,6 +305,54 @@ function Plots.collect(player: Player): number
 		data.cash += amount
 	end
 	return amount
+end
+
+-- Timed lock ----------------------------------------------------------------
+function Plots.lockBase(player: Player)
+	local index = playerPlot[player]
+	if not index then
+		return
+	end
+	local s = state[index]
+	if Monetization.owns(player, "BaseLock") then
+		notify(player, "Your base is already permanently locked!", Color3.fromRGB(90, 150, 255))
+		return
+	end
+	s.lockedUntil = os.clock() + Config.LockDuration
+	s.lockedApplied = true
+	applyLockToPrompts(index)
+	Plots.updateSign(index)
+	notify(player, ("Base LOCKED for %ds!"):format(Config.LockDuration), Color3.fromRGB(90, 150, 255))
+	syncPlayer(player)
+end
+
+-- Called ~once a second from Main: expire timed locks and refresh signs.
+function Plots.updateLocks()
+	for index, s in state do
+		if s.owner then
+			local locked = Plots.isLocked(index)
+			if locked ~= s.lockedApplied then
+				s.lockedApplied = locked
+				applyLockToPrompts(index)
+				if not locked then
+					notify(s.owner, "Your base is UNLOCKED — re-lock it!", Color3.fromRGB(230, 90, 90))
+				end
+				syncPlayer(s.owner)
+			end
+			Plots.updateSign(index) -- keep the lock countdown live
+		end
+	end
+end
+
+-- Re-apply lock state after a Base Lock pass purchase.
+function Plots.refreshLock(player: Player)
+	local index = playerPlot[player]
+	if not index then
+		return
+	end
+	state[index].lockedApplied = Plots.isLocked(index)
+	applyLockToPrompts(index)
+	Plots.updateSign(index)
 end
 
 -- Rolling -------------------------------------------------------------------
@@ -273,7 +378,6 @@ function Plots.roll(player: Player): (boolean, any, string?)
 	return true, def, nil
 end
 
--- Lucky Roll product: guaranteed Legendary+. Falls back to cash if base full.
 function Plots.luckyRoll(player: Player): boolean
 	local index = playerPlot[player]
 	if not index or not firstFreeSlot(index) then
@@ -290,6 +394,43 @@ function Plots.luckyRoll(player: Player): boolean
 	return true
 end
 
+-- Rebirth -------------------------------------------------------------------
+function Plots.rebirthCost(player: Player): number
+	local data = Data.get(player)
+	local rebirths = (data and data.rebirths) or 0
+	return math.floor(Config.Rebirth.baseCost * Config.Rebirth.costGrowth ^ rebirths)
+end
+
+function Plots.canRebirth(player: Player): boolean
+	local data = Data.get(player)
+	return data ~= nil and data.cash >= Plots.rebirthCost(player)
+end
+
+-- Resets cash + brainrots for a permanent income multiplier. Returns the new
+-- rebirth count on success, or nil.
+function Plots.rebirth(player: Player): number?
+	local index = playerPlot[player]
+	local data = Data.get(player)
+	if not index or not data then
+		return nil
+	end
+	if data.cash < Plots.rebirthCost(player) then
+		return nil
+	end
+
+	data.rebirths = (data.rebirths or 0) + 1
+	data.cash = Config.StartingCash
+	data.brainrots = {}
+
+	local s = state[index]
+	s.uncollected = 0
+	for slot = 1, Config.SlotsPerPlot do
+		removeFromSlot(index, slot)
+	end
+	Plots.updateSign(index)
+	return data.rebirths
+end
+
 -- Stealing ------------------------------------------------------------------
 function Plots.handleSteal(thief: Player, victimIndex: number, slot: number)
 	local vs = state[victimIndex]
@@ -298,10 +439,10 @@ function Plots.handleSteal(thief: Player, victimIndex: number, slot: number)
 	end
 	local victim = vs.owner
 	if victim == thief then
-		return -- can't steal from yourself
+		return
 	end
-	if Monetization.owns(victim, "BaseLock") then
-		notify(thief, victim.Name .. "'s base is locked!", Color3.fromRGB(230, 90, 90))
+	if Plots.isLocked(victimIndex) then
+		notify(thief, victim.Name .. "'s base is LOCKED!", Color3.fromRGB(230, 90, 90))
 		return
 	end
 	local defId = vs.slots[slot]
@@ -315,7 +456,7 @@ function Plots.handleSteal(thief: Player, victimIndex: number, slot: number)
 	end
 	local freeSlot = firstFreeSlot(thiefIndex)
 	if not freeSlot then
-		notify(thief, "Your base is full — collect or sell first!", Color3.fromRGB(230, 90, 90))
+		notify(thief, "Your base is full — collect or rebirth first!", Color3.fromRGB(230, 90, 90))
 		return
 	end
 
@@ -334,50 +475,51 @@ function Plots.handleSteal(thief: Player, victimIndex: number, slot: number)
 	syncPlayer(victim)
 end
 
--- When a player buys Base Lock mid-game, disable steal prompts on their plot.
-function Plots.refreshLock(player: Player)
-	local index = playerPlot[player]
-	if not index then
-		return
-	end
-	local locked = Monetization.owns(player, "BaseLock")
-	for slot = 1, Config.SlotsPerPlot do
-		local unit = state[index].units[slot]
-		if unit then
-			local body = unit:FindFirstChild("Body")
-			local prompt = body and body:FindFirstChildOfClass("ProximityPrompt")
-			if prompt then
-				prompt.Enabled = not locked
-			end
-		end
-	end
-end
-
 -- Signs ---------------------------------------------------------------------
-local Format = require(ReplicatedStorage.Shared.Format)
 function Plots.updateSign(index: number)
 	local w = world[index]
 	local s = state[index]
 	if s.owner then
-		w.ownerLabel.Text = s.owner.Name .. "'s Base"
-		local income = Plots.baseIncome(index) * Monetization.multiplier(s.owner)
-		w.statsLabel.Text = ("$%s/s  •  Uncollected: $%s"):format(
+		local rebirths = Plots.rebirthMultiplier(s.owner)
+		local data = Data.get(s.owner)
+		local rebirthCount = (data and data.rebirths) or 0
+		w.ownerLabel.Text = s.owner.Name .. "'s Base" .. (rebirthCount > 0 and (" ⭐" .. rebirthCount) or "")
+
+		local income = Plots.baseIncome(index) * Plots.totalMultiplier(s.owner)
+		local lockText, padText
+		if Monetization.owns(s.owner, "BaseLock") then
+			lockText, padText = "🔒 LOCKED (Pass)", "LOCKED (Pass)"
+		elseif Plots.isLocked(index) then
+			local remaining = Plots.lockRemaining(index)
+			lockText, padText = ("🔒 LOCKED %ds"):format(remaining), ("LOCKED %ds"):format(remaining)
+		else
+			lockText, padText = "🔓 UNLOCKED", "LOCK BASE"
+		end
+		w.statsLabel.Text = ("$%s/s  •  Bank: $%s\n%s"):format(
 			Format.abbreviate(income),
-			Format.abbreviate(s.uncollected)
+			Format.abbreviate(s.uncollected),
+			lockText
 		)
+		if w.lockPadLabel then
+			w.lockPadLabel.Text = padText
+		end
 	else
 		w.ownerLabel.Text = "Empty Base"
 		w.statsLabel.Text = ""
+		if w.lockPadLabel then
+			w.lockPadLabel.Text = "LOCK BASE"
+		end
 	end
 end
 
 -- Assignment ----------------------------------------------------------------
--- Restores saved brainrots and updates the sign.
 function Plots.assign(player: Player): number?
 	for index = 1, Config.PlotCount do
 		if not state[index].owner then
 			state[index].owner = player
 			playerPlot[player] = index
+			state[index].lockedUntil = nil
+			state[index].lockedApplied = Plots.isLocked(index)
 
 			local data = Data.get(player)
 			if data and data.brainrots then
@@ -392,11 +534,9 @@ function Plots.assign(player: Player): number?
 			return index
 		end
 	end
-	return nil -- server full (shouldn't happen if PlotCount >= MaxPlayers)
+	return nil
 end
 
--- Writes the plot's current brainrots + banks uncollected into save data,
--- WITHOUT clearing the plot. Safe to call on a timer (autosave / shutdown).
 function Plots.snapshotToData(player: Player)
 	local index = playerPlot[player]
 	if not index then
@@ -418,7 +558,6 @@ function Plots.snapshotToData(player: Player)
 	data.brainrots = ids
 end
 
--- Snapshots, then clears the plot for the next player.
 function Plots.release(player: Player)
 	local index = playerPlot[player]
 	if not index then
@@ -429,6 +568,8 @@ function Plots.release(player: Player)
 		removeFromSlot(index, slot)
 	end
 	state[index].owner = nil
+	state[index].lockedUntil = nil
+	state[index].lockedApplied = false
 	playerPlot[player] = nil
 	Plots.updateSign(index)
 end
@@ -442,28 +583,42 @@ end
 function Plots.init(worldPlots: { any })
 	world = worldPlots
 	for i = 1, Config.PlotCount do
-		state[i] = { owner = nil, uncollected = 0, slots = {}, units = {} }
+		state[i] = { owner = nil, uncollected = 0, slots = {}, units = {}, lockedUntil = nil, lockedApplied = false }
 	end
 
-	-- Collect pads: stepping on your own pad banks your income.
-	local debounce: { [number]: number } = {}
+	local collectDebounce: { [number]: number } = {}
+	local lockDebounce: { [number]: number } = {}
+
 	for i = 1, Config.PlotCount do
+		-- Collect pad: bank your income.
 		world[i].collectPad.Touched:Connect(function(hit)
-			local character = hit.Parent
-			local plr = character and Players:GetPlayerFromCharacter(character)
+			local plr = hit.Parent and Players:GetPlayerFromCharacter(hit.Parent)
 			if not plr or playerPlot[plr] ~= i then
 				return
 			end
 			local now = os.clock()
-			if debounce[i] and now - debounce[i] < 0.5 then
+			if collectDebounce[i] and now - collectDebounce[i] < 0.5 then
 				return
 			end
-			debounce[i] = now
-			local amount = Plots.collect(plr)
-			if amount > 0 then
+			collectDebounce[i] = now
+			if Plots.collect(plr) > 0 then
 				Plots.updateSign(i)
 				syncPlayer(plr)
 			end
+		end)
+
+		-- Lock pad: (re)lock your base for Config.LockDuration seconds.
+		world[i].lockPad.Touched:Connect(function(hit)
+			local plr = hit.Parent and Players:GetPlayerFromCharacter(hit.Parent)
+			if not plr or playerPlot[plr] ~= i then
+				return
+			end
+			local now = os.clock()
+			if lockDebounce[i] and now - lockDebounce[i] < 1 then
+				return
+			end
+			lockDebounce[i] = now
+			Plots.lockBase(plr)
 		end)
 	end
 end

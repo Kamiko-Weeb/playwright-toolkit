@@ -29,6 +29,30 @@ Config.RollCostGrowth = 1.18 -- ^ (number of brainrots you own)
 Config.StealHoldSeconds = 4 -- how long a thief must hold the prompt
 Config.StealRange = 12
 
+-- Timed base lock -------------------------------------------------------------
+-- Stepping on your LOCK pad locks your base for this many seconds; then it
+-- expires and you must return and step on it again. (The Base Lock GAME PASS
+-- makes the lock permanent — no timer, no pad needed.)
+Config.LockDuration = 60
+
+-- Rebirth (prestige) ----------------------------------------------------------
+-- Reset your cash + brainrots for a permanent income multiplier.
+Config.Rebirth = {
+	baseCost = 100000, -- banked cash needed for your first rebirth
+	costGrowth = 5, -- cost multiplies each rebirth
+	multiplierPerRebirth = 0.5, -- +50% income per rebirth, forever
+}
+
+-- Combat ----------------------------------------------------------------------
+-- Everyone spawns with a sword. Hitting a thief knocks them back, which
+-- cancels their steal hold — the core way to defend your base.
+Config.Combat = {
+	damage = 30,
+	range = 9,
+	cooldown = 0.6, -- seconds between swings
+	knockback = 55,
+}
+
 -- Perks -----------------------------------------------------------------------
 Config.DefaultWalkSpeed = 16
 Config.SpeedPassWalkSpeed = 26

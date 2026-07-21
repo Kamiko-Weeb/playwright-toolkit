@@ -54,29 +54,38 @@ local function buildPlot(index: number, originX: number, parent: Instance)
 		end
 	end
 
-	-- Collect pad at the front
-	local collectPad = part({
-		Name = "CollectPad",
-		Size = Vector3.new(12, 1, 8),
-		Position = Vector3.new(originX, 1.25, 15),
-		Color = Color3.fromRGB(80, 200, 120),
-		Material = Enum.Material.Neon,
-		Parent = model,
-	})
-	local collectLabel = Instance.new("BillboardGui")
-	collectLabel.Size = UDim2.fromOffset(180, 40)
-	collectLabel.StudsOffsetWorldSpace = Vector3.new(0, 2.5, 0)
-	collectLabel.AlwaysOnTop = true
-	collectLabel.Parent = collectPad
-	local collectText = Instance.new("TextLabel")
-	collectText.Size = UDim2.fromScale(1, 1)
-	collectText.BackgroundTransparency = 1
-	collectText.Font = Enum.Font.GothamBold
-	collectText.TextColor3 = Color3.fromRGB(255, 255, 255)
-	collectText.TextStrokeTransparency = 0.4
-	collectText.TextScaled = true
-	collectText.Text = "COLLECT"
-	collectText.Parent = collectLabel
+	-- A labeled neon pad the player steps on. Returns the pad part.
+	local function makePad(name: string, offsetX: number, color: Color3, text: string): BasePart
+		local padPart = part({
+			Name = name,
+			Size = Vector3.new(12, 1, 8),
+			Position = Vector3.new(originX + offsetX, 1.25, 15),
+			Color = color,
+			Material = Enum.Material.Neon,
+			Parent = model,
+		})
+		local gui = Instance.new("BillboardGui")
+		gui.Size = UDim2.fromOffset(180, 40)
+		gui.StudsOffsetWorldSpace = Vector3.new(0, 2.5, 0)
+		gui.AlwaysOnTop = true
+		gui.Parent = padPart
+		local label = Instance.new("TextLabel")
+		label.Name = "Label"
+		label.Size = UDim2.fromScale(1, 1)
+		label.BackgroundTransparency = 1
+		label.Font = Enum.Font.GothamBold
+		label.TextColor3 = Color3.fromRGB(255, 255, 255)
+		label.TextStrokeTransparency = 0.4
+		label.TextScaled = true
+		label.Text = text
+		label.Parent = gui
+		return padPart
+	end
+
+	-- Collect (left) and Lock (right) pads at the front of the base.
+	local collectPad = makePad("CollectPad", -8, Color3.fromRGB(80, 200, 120), "COLLECT")
+	local lockPad = makePad("LockPad", 8, Color3.fromRGB(90, 150, 255), "LOCK BASE")
+	local lockPadLabel = lockPad:FindFirstChildOfClass("BillboardGui"):FindFirstChild("Label") :: TextLabel
 
 	-- Owner sign on a pole at the back
 	local pole = part({
@@ -123,6 +132,8 @@ local function buildPlot(index: number, originX: number, parent: Instance)
 		model = model,
 		podiums = podiums,
 		collectPad = collectPad,
+		lockPad = lockPad,
+		lockPadLabel = lockPadLabel,
 		ownerLabel = ownerLabel,
 		statsLabel = statsLabel,
 		spawnCFrame = CFrame.lookAt(Vector3.new(originX, 4, 12), Vector3.new(originX, 4, 0)),

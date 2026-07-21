@@ -19,6 +19,7 @@ local Remotes = ReplicatedStorage:WaitForChild("Remotes")
 local SyncEvent = Remotes:WaitForChild("Sync") :: RemoteEvent
 local RollEvent = Remotes:WaitForChild("Roll") :: RemoteEvent
 local CollectEvent = Remotes:WaitForChild("Collect") :: RemoteEvent
+local RebirthEvent = Remotes:WaitForChild("Rebirth") :: RemoteEvent
 local NotifyEvent = Remotes:WaitForChild("Notify") :: RemoteEvent
 local ReadyEvent = Remotes:WaitForChild("Ready") :: RemoteEvent
 local LeaderboardFn = Remotes:WaitForChild("GetLeaderboard") :: RemoteFunction
@@ -77,7 +78,7 @@ local gui = create("ScreenGui", {
 
 -- Top bar --------------------------------------------------------------------
 local topBar = create("Frame", {
-	Size = UDim2.new(0, 340, 0, 80),
+	Size = UDim2.new(0, 340, 0, 104),
 	Position = UDim2.new(0.5, 0, 0, 12),
 	AnchorPoint = Vector2.new(0.5, 0),
 	BackgroundColor3 = COLORS.panel,
@@ -86,7 +87,7 @@ local topBar = create("Frame", {
 }, { corner(16) })
 
 local cashLabel = create("TextLabel", {
-	Size = UDim2.new(1, -20, 0, 44),
+	Size = UDim2.new(1, -20, 0, 42),
 	Position = UDim2.new(0, 10, 0, 6),
 	BackgroundTransparency = 1,
 	Font = Enum.Font.GothamBold,
@@ -104,6 +105,17 @@ local incomeLabel = create("TextLabel", {
 	TextColor3 = COLORS.green,
 	TextScaled = true,
 	Text = "+0 / sec",
+	Parent = topBar,
+})
+
+local lockLabel = create("TextLabel", {
+	Size = UDim2.new(1, -20, 0, 22),
+	Position = UDim2.new(0, 10, 0, 74),
+	BackgroundTransparency = 1,
+	Font = Enum.Font.GothamMedium,
+	TextColor3 = COLORS.subtext,
+	TextScaled = true,
+	Text = "🔓 Unlocked — step on your LOCK pad",
 	Parent = topBar,
 })
 
@@ -149,6 +161,7 @@ local function sideButton(text: string, order: number, color: Color3): TextButto
 end
 local storeSideBtn = sideButton("Store", 1, COLORS.robux)
 local topSideBtn = sideButton("Top 10", 2, COLORS.panel)
+local rebirthSideBtn = sideButton("Rebirth", 3, COLORS.gold)
 
 -- Panels ---------------------------------------------------------------------
 local openPanel: Frame? = nil
@@ -318,6 +331,45 @@ topSideBtn.Activated:Connect(function()
 	end
 end)
 
+-- Rebirth --------------------------------------------------------------------
+local rebirthPanel, rebirthScroll = makePanel("Rebirth")
+rebirthSideBtn.Activated:Connect(function()
+	togglePanel(rebirthPanel)
+end)
+
+local rebirthInfoFrame = create("Frame", {
+	Size = UDim2.new(1, 0, 0, 150),
+	BackgroundColor3 = COLORS.row,
+	LayoutOrder = 1,
+	Parent = rebirthScroll,
+}, { corner(12), pad(12) })
+local rebirthInfo = create("TextLabel", {
+	Size = UDim2.new(1, 0, 1, 0),
+	BackgroundTransparency = 1,
+	Font = Enum.Font.GothamMedium,
+	TextColor3 = COLORS.text,
+	TextScaled = true,
+	TextXAlignment = Enum.TextXAlignment.Left,
+	TextYAlignment = Enum.TextYAlignment.Top,
+	Text = "Rebirth resets your cash and brainrots for a permanent income boost.",
+	TextWrapped = true,
+	Parent = rebirthInfoFrame,
+})
+
+local rebirthConfirm = create("TextButton", {
+	Size = UDim2.new(1, 0, 0, 64),
+	BackgroundColor3 = COLORS.gold,
+	Font = Enum.Font.GothamBold,
+	TextColor3 = Color3.fromRGB(60, 45, 0),
+	TextScaled = true,
+	Text = "REBIRTH",
+	LayoutOrder = 2,
+	Parent = rebirthScroll,
+}, { corner(12), pad(10) })
+rebirthConfirm.Activated:Connect(function()
+	RebirthEvent:FireServer()
+end)
+
 -- Toasts ---------------------------------------------------------------------
 local toastLayout = create("Frame", {
 	Size = UDim2.new(0, 320, 1, -20),
@@ -389,6 +441,34 @@ local function refresh()
 			btn.Text = "Buy"
 			btn.BackgroundColor3 = COLORS.robux
 		end
+	end
+
+	-- Lock status
+	if snapshot.lockPermanent then
+		lockLabel.Text = "🔒 Locked (Base Lock pass)"
+		lockLabel.TextColor3 = COLORS.accent
+	elseif snapshot.locked then
+		lockLabel.Text = ("🔒 Locked — %ds left"):format(snapshot.lockRemaining)
+		lockLabel.TextColor3 = COLORS.accent
+	else
+		lockLabel.Text = "🔓 Unlocked — step on your LOCK pad"
+		lockLabel.TextColor3 = COLORS.subtext
+	end
+
+	-- Rebirth panel
+	local nextMult = snapshot.rebirthMultiplier + Config.Rebirth.multiplierPerRebirth
+	rebirthInfo.Text = ("Rebirths: %d   (x%.2f income)\n\nNext rebirth costs $%s and raises you to x%.2f income.\n\nResets your cash & brainrots."):format(
+		snapshot.rebirths,
+		snapshot.rebirthMultiplier,
+		Format.abbreviate(snapshot.rebirthCost),
+		nextMult
+	)
+	if snapshot.canRebirth then
+		rebirthConfirm.Text = "REBIRTH NOW"
+		rebirthConfirm.BackgroundColor3 = COLORS.gold
+	else
+		rebirthConfirm.Text = ("Need $%s"):format(Format.abbreviate(snapshot.rebirthCost))
+		rebirthConfirm.BackgroundColor3 = COLORS.row
 	end
 end
 

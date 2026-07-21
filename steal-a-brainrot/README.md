@@ -20,11 +20,29 @@ your IDs.
    **SECRET**. Each brainrot you own makes your next roll pricier…
 4. …so the smart play is to **STEAL**: walk onto a rival's base, hold the
    **Steal** prompt on their brainrot, and it jumps to your base.
-5. Buy **Base Lock** so nobody can rob you, **Super Speed** to raid and escape,
-   **2x Cash / VIP** to out-earn everyone. Climb the global **Top 10**.
+5. **Defend:** step on your **LOCK pad** to lock your base for 60s (it expires —
+   you have to come back and re-lock), or swing your **sword** to knock thieves
+   off your base and cancel their steal.
+6. **Rebirth** when you're rich to reset for a permanent income multiplier.
+7. Buy **Base Lock** (permanent lock), **Super Speed**, **2x Cash / VIP** to
+   out-earn everyone. Climb the global **Top 10**.
 
 That theft loop is the viral hook — it's why "Steal a Brainrot" hit 150K+
 concurrent players.
+
+### The three defense/progression systems
+
+- **Timed base lock (free):** stepping on your LOCK pad disables steals on your
+  base for `Config.LockDuration` (60s), then it expires — active defense you
+  have to keep topping up. The **Base Lock game pass** makes it *permanent*
+  (no timer, no pad), which is why it's worth Robux.
+- **Combat:** everyone spawns with a sword. Click / tap (or the ⚔️ button on
+  mobile) to swing; hits deal damage + knockback, and the knockback pushes a
+  thief out of range, **canceling their steal hold**. Server-authoritative — the
+  client only requests a swing.
+- **Rebirth:** once your banked cash passes the threshold, rebirth resets your
+  cash + brainrots for a permanent **+50% income** each time (stacks forever).
+  Roll costs reset too, so you rebuild faster and richer.
 
 ### Monetization (already built)
 
@@ -128,6 +146,9 @@ nothing else changes.
 | `PlotCount` / `SlotsPerPlot` | bases per server / podiums per base |
 | `BaseRollCost`, `RollCostGrowth` | roll price and how fast it climbs (pushes stealing) |
 | `StealHoldSeconds`, `StealRange` | how risky/slow stealing is |
+| `LockDuration` | seconds a timed base lock lasts before you must re-lock |
+| `Rebirth.baseCost / costGrowth / multiplierPerRebirth` | rebirth threshold, scaling, and permanent bonus |
+| `Combat.damage / range / cooldown / knockback` | sword feel and how hard it interrupts thieves |
 | `Brainrots.List` income + rarity `weight` | the entire earn curve & rarity odds |
 | `Multipliers` | what 2x Cash / VIP are worth |
 
@@ -165,11 +186,13 @@ steal-a-brainrot/
     │   └── Format.lua            number abbreviation
     ├── ServerScriptService/
     │   ├── Main.server.lua       entry: world, remotes, join/leave, tick
-    │   ├── WorldBuilder.lua      builds all bases in code
-    │   ├── Plots.lua             plots, placement, income, ROLL + STEAL
+    │   ├── WorldBuilder.lua      builds all bases in code (podiums, pads, signs)
+    │   ├── Plots.lua             plots, placement, income, ROLL, STEAL, LOCK, REBIRTH
+    │   ├── Combat.lua            swords + swing hitreg + knockback
     │   ├── Data.lua              DataStore save/load
     │   ├── Monetization.lua      pass ownership + product receipts
     │   └── Leaderboard.lua       global Top-10
     └── StarterPlayerScripts/
-        └── ClientMain.client.lua all UI + client loop + toasts
+        ├── ClientMain.client.lua  all UI + client loop + toasts + rebirth panel
+        └── CombatClient.client.lua click/tap to swing + mobile attack button
 ```

@@ -13,6 +13,7 @@ local Monetization = require(script.Parent.Monetization)
 local Leaderboard = require(script.Parent.Leaderboard)
 local WorldBuilder = require(script.Parent.WorldBuilder)
 local Plots = require(script.Parent.Plots)
+local Combat = require(script.Parent.Combat)
 
 -- Players spawn at their base, so we load characters manually after assigning.
 Players.CharacterAutoLoads = false
@@ -34,6 +35,8 @@ end
 local SyncEvent = makeEvent("Sync")
 local RollEvent = makeEvent("Roll")
 local CollectEvent = makeEvent("Collect")
+local RebirthEvent = makeEvent("Rebirth")
+local SwingEvent = makeEvent("Swing")
 local NotifyEvent = makeEvent("Notify")
 local ReadyEvent = makeEvent("Ready")
 
@@ -42,6 +45,9 @@ LeaderboardFn.Name = "GetLeaderboard"
 LeaderboardFn.Parent = Remotes
 
 Remotes.Parent = ReplicatedStorage
+
+-- Combat listens for swing requests.
+Combat.setup(SwingEvent)
 
 -- Snapshot / sync ------------------------------------------------------------
 local function buildSnapshot(player: Player)
@@ -54,6 +60,8 @@ local function buildSnapshot(player: Player)
 	for _, key in Config.GamePassOrder do
 		passes[key] = Monetization.owns(player, key)
 	end
+	local index = Plots.plotIndexOf(player)
+	local remaining = index and Plots.lockRemaining(index) or 0
 	return {
 		cash = data.cash,
 		income = Plots.incomePerSecond(player),
@@ -61,6 +69,13 @@ local function buildSnapshot(player: Player)
 		slotsUsed = used,
 		slotsTotal = total,
 		passes = passes,
+		locked = index ~= nil and Plots.isLocked(index),
+		lockPermanent = remaining == math.huge,
+		lockRemaining = remaining == math.huge and 0 or remaining,
+		rebirths = data.rebirths or 0,
+		rebirthCost = Plots.rebirthCost(player),
+		rebirthMultiplier = Plots.rebirthMultiplier(player),
+		canRebirth = Plots.canRebirth(player),
 	}
 end
 
@@ -117,6 +132,7 @@ local function onCharacter(player: Player, character: Model)
 		root.CFrame = cf + Vector3.new(0, 3, 0)
 	end
 	applyWalkSpeed(player)
+	Combat.equip(character)
 end
 
 Monetization.setupPassListener(function(player, passKey)
@@ -150,6 +166,24 @@ CollectEvent.OnServerEvent:Connect(function(player)
 	pushSync(player)
 end)
 
+RebirthEvent.OnServerEvent:Connect(function(player)
+	local newCount = Plots.rebirth(player)
+	if newCount then
+		local ls = player:FindFirstChild("leaderstats")
+		local rebirthValue = ls and ls:FindFirstChild("Rebirths")
+		if rebirthValue then
+			(rebirthValue :: IntValue).Value = newCount
+		end
+		notify(player, ("REBIRTH! You're now Rebirth %d (+%d%% income)"):format(
+			newCount,
+			math.floor(newCount * Config.Rebirth.multiplierPerRebirth * 100)
+		), Color3.fromRGB(255, 205, 70))
+	else
+		notify(player, "Not enough cash to rebirth yet!", Color3.fromRGB(230, 90, 90))
+	end
+	pushSync(player)
+end)
+
 ReadyEvent.OnServerEvent:Connect(function(player)
 	pushSync(player)
 end)
@@ -164,12 +198,17 @@ local function onJoin(player: Player)
 	Monetization.loadPasses(player)
 	Plots.assign(player)
 
+	local data = Data.get(player)
 	local leaderstats = Instance.new("Folder")
 	leaderstats.Name = "leaderstats"
 	local cashValue = Instance.new("StringValue")
 	cashValue.Name = "Cash"
 	cashValue.Value = "0"
 	cashValue.Parent = leaderstats
+	local rebirthValue = Instance.new("IntValue")
+	rebirthValue.Name = "Rebirths"
+	rebirthValue.Value = (data and data.rebirths) or 0
+	rebirthValue.Parent = leaderstats
 	leaderstats.Parent = player
 
 	player.CharacterAdded:Connect(function(character)
@@ -200,8 +239,15 @@ end
 -- Economy tick + periodic sync ----------------------------------------------
 local Format = require(ReplicatedStorage.Shared.Format)
 local syncAccumulator = 0
+local lockAccumulator = 0
 RunService.Heartbeat:Connect(function(dt)
 	Plots.tick(dt)
+
+	lockAccumulator += dt
+	if lockAccumulator >= 1 then
+		lockAccumulator -= 1
+		Plots.updateLocks() -- expire timed locks + refresh sign countdowns
+	end
 
 	syncAccumulator += dt
 	if syncAccumulator >= Config.SyncInterval then
