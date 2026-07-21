@@ -1,7 +1,7 @@
 -- ============================================================================
 --  ClientMain — builds the whole UI in code (no assets) and runs the client
---  loop: predicts Loot between syncs; rolls (with a slot-machine reveal);
---  collects; manages the Vault (sell / fuse); ascends; store; toasts.
+--  loop: predicts Cash between syncs; rolls (with a slot-machine reveal);
+--  collects; manages the Base (sell / fuse); rebirths; store; toasts.
 -- ============================================================================
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -73,8 +73,8 @@ local function pad(px: number)
 	})
 end
 
--- Latest authoritative snapshot + predicted Loot. Declared up here so every
--- UI closure (e.g. rebuildVault) captures the same upvalue.
+-- Latest authoritative snapshot + predicted Cash. Declared up here so every
+-- UI closure (e.g. rebuildBase) captures the same upvalue.
 local snapshot: any = nil
 local displayCash = 0
 
@@ -103,7 +103,7 @@ local cashLabel = create("TextLabel", {
 	Font = Enum.Font.GothamBold,
 	TextColor3 = COLORS.gold,
 	TextScaled = true,
-	Text = "0 Loot",
+	Text = "0 Cash",
 	Parent = topBar,
 })
 
@@ -181,9 +181,9 @@ local function sideButton(text: string, order: number, color: Color3): TextButto
 	}, { corner(12), pad(10) })
 end
 local storeSideBtn = sideButton("Store", 1, COLORS.robux)
-local vaultSideBtn = sideButton("Vault", 2, COLORS.accent)
+local baseSideBtn = sideButton("Bag", 2, COLORS.accent)
 local topSideBtn = sideButton("Top 10", 3, COLORS.panel)
-local ascendSideBtn = sideButton("Ascend", 4, COLORS.gold)
+local rebirthSideBtn = sideButton("Rebirth", 4, COLORS.gold)
 
 -- Panels ---------------------------------------------------------------------
 local openPanel: Frame? = nil
@@ -302,7 +302,7 @@ end
 for _, key in Config.ProductOrder do
 	storeOrder += 1
 	local productInfo = Config.Products[key]
-	local subtitle = productInfo.desc or "Instant Loot"
+	local subtitle = productInfo.desc or "Instant Cash"
 	storeRow(storeOrder, productInfo.name, subtitle, function()
 		if productInfo.id ~= 0 then
 			MarketplaceService:PromptProductPurchase(player, productInfo.id)
@@ -312,14 +312,14 @@ for _, key in Config.ProductOrder do
 	end)
 end
 
--- Vault (manage: sell / fuse) ------------------------------------------------
-local vaultPanel, vaultScroll = makePanel("Your Vault")
+-- Base (manage: sell / fuse) ------------------------------------------------
+local basePanel, baseScroll = makePanel("Your Brainrots")
 
-local function rebuildVault()
-	if not vaultPanel.Visible then
+local function rebuildBase()
+	if not basePanel.Visible then
 		return
 	end
-	for _, child in vaultScroll:GetChildren() do
+	for _, child in baseScroll:GetChildren() do
 		if not child:IsA("UIListLayout") then
 			child:Destroy()
 		end
@@ -335,7 +335,7 @@ local function rebuildVault()
 		TextScaled = true,
 		Text = "Sell All Commons",
 		LayoutOrder = 0,
-		Parent = vaultScroll,
+		Parent = baseScroll,
 	}, { corner(10), pad(8) })
 	sellAll.Activated:Connect(function()
 		SellCommonsEvent:FireServer()
@@ -362,7 +362,7 @@ local function rebuildVault()
 				TextScaled = true,
 				Text = ("✨ Fuse %dx %s → Golden"):format(Config.Fusion.count, e.name),
 				LayoutOrder = order,
-				Parent = vaultScroll,
+				Parent = baseScroll,
 			}, { corner(10), pad(6) })
 			fuseBtn.Activated:Connect(function()
 				FuseEvent:FireServer(id)
@@ -378,7 +378,7 @@ local function rebuildVault()
 			Size = UDim2.new(1, 0, 0, 56),
 			BackgroundColor3 = COLORS.row,
 			LayoutOrder = order,
-			Parent = vaultScroll,
+			Parent = baseScroll,
 		}, { corner(10), pad(8) })
 		create("TextLabel", {
 			Size = UDim2.new(1, -110, 1, 0),
@@ -414,9 +414,9 @@ local function rebuildVault()
 	end
 end
 
-vaultSideBtn.Activated:Connect(function()
-	togglePanel(vaultPanel)
-	rebuildVault()
+baseSideBtn.Activated:Connect(function()
+	togglePanel(basePanel)
+	rebuildBase()
 end)
 
 -- Top 10 ---------------------------------------------------------------------
@@ -460,19 +460,19 @@ topSideBtn.Activated:Connect(function()
 	end
 end)
 
--- Ascend (rebirth) -----------------------------------------------------------
-local ascendPanel, ascendScroll = makePanel("Ascend")
-ascendSideBtn.Activated:Connect(function()
-	togglePanel(ascendPanel)
+-- Rebirth (rebirth) -----------------------------------------------------------
+local rebirthPanel, rebirthScroll = makePanel("Rebirth")
+rebirthSideBtn.Activated:Connect(function()
+	togglePanel(rebirthPanel)
 end)
 
-local ascendInfoFrame = create("Frame", {
+local rebirthInfoFrame = create("Frame", {
 	Size = UDim2.new(1, 0, 0, 150),
 	BackgroundColor3 = COLORS.row,
 	LayoutOrder = 1,
-	Parent = ascendScroll,
+	Parent = rebirthScroll,
 }, { corner(12), pad(12) })
-local ascendInfo = create("TextLabel", {
+local rebirthInfo = create("TextLabel", {
 	Size = UDim2.new(1, 0, 1, 0),
 	BackgroundTransparency = 1,
 	Font = Enum.Font.GothamMedium,
@@ -480,22 +480,22 @@ local ascendInfo = create("TextLabel", {
 	TextScaled = true,
 	TextXAlignment = Enum.TextXAlignment.Left,
 	TextYAlignment = Enum.TextYAlignment.Top,
-	Text = "Ascending resets your Loot and Brainrots for a permanent income boost.",
+	Text = "Rebirth resets your Cash and Brainrots for a permanent income boost.",
 	TextWrapped = true,
-	Parent = ascendInfoFrame,
+	Parent = rebirthInfoFrame,
 })
 
-local ascendConfirm = create("TextButton", {
+local rebirthConfirm = create("TextButton", {
 	Size = UDim2.new(1, 0, 0, 64),
 	BackgroundColor3 = COLORS.gold,
 	Font = Enum.Font.GothamBold,
 	TextColor3 = Color3.fromRGB(60, 45, 0),
 	TextScaled = true,
-	Text = "ASCEND",
+	Text = "REBIRTH",
 	LayoutOrder = 2,
-	Parent = ascendScroll,
+	Parent = rebirthScroll,
 }, { corner(12), pad(10) })
-ascendConfirm.Activated:Connect(function()
+rebirthConfirm.Activated:Connect(function()
 	RebirthEvent:FireServer()
 end)
 
@@ -662,19 +662,19 @@ local function refresh()
 
 	-- Lock status
 	if snapshot.lockPermanent then
-		lockLabel.Text = "🔒 Vault Locked (pass)"
+		lockLabel.Text = "🔒 Base Locked (pass)"
 		lockLabel.TextColor3 = COLORS.accent
 	elseif snapshot.locked then
-		lockLabel.Text = ("🔒 Vault Locked — %ds left"):format(snapshot.lockRemaining)
+		lockLabel.Text = ("🔒 Base Locked — %ds left"):format(snapshot.lockRemaining)
 		lockLabel.TextColor3 = COLORS.accent
 	else
 		lockLabel.Text = "🔓 Unlocked — step on your LOCK pad"
 		lockLabel.TextColor3 = COLORS.subtext
 	end
 
-	-- Snatch streak
+	-- Steal streak
 	if snapshot.streakCount and snapshot.streakCount > 0 then
-		streakLabel.Text = ("🔥 Snatch Streak x%d (+%d%%)  %ds"):format(
+		streakLabel.Text = ("🔥 Steal Streak x%d (+%d%%)  %ds"):format(
 			snapshot.streakCount,
 			math.floor((snapshot.streakMultiplier - 1) * 100),
 			snapshot.streakRemaining
@@ -683,23 +683,23 @@ local function refresh()
 		streakLabel.Text = ""
 	end
 
-	-- Ascend panel
+	-- Rebirth panel
 	local nextMult = snapshot.rebirthMultiplier + Config.Rebirth.multiplierPerRebirth
-	ascendInfo.Text = ("Tier: %d   (x%.2f income)\n\nNext ascension costs $%s and raises you to x%.2f income.\n\nResets your Loot & Brainrots."):format(
+	rebirthInfo.Text = ("Rebirths: %d   (x%.2f income)\n\nNext rebirth costs $%s and raises you to x%.2f income.\n\nResets your Cash & Brainrots."):format(
 		snapshot.rebirths,
 		snapshot.rebirthMultiplier,
 		Format.abbreviate(snapshot.rebirthCost),
 		nextMult
 	)
 	if snapshot.canRebirth then
-		ascendConfirm.Text = "ASCEND NOW"
-		ascendConfirm.BackgroundColor3 = COLORS.gold
+		rebirthConfirm.Text = "REBIRTH NOW"
+		rebirthConfirm.BackgroundColor3 = COLORS.gold
 	else
-		ascendConfirm.Text = ("Need $%s"):format(Format.abbreviate(snapshot.rebirthCost))
-		ascendConfirm.BackgroundColor3 = COLORS.row
+		rebirthConfirm.Text = ("Need $%s"):format(Format.abbreviate(snapshot.rebirthCost))
+		rebirthConfirm.BackgroundColor3 = COLORS.row
 	end
 
-	rebuildVault()
+	rebuildBase()
 end
 
 SyncEvent.OnClientEvent:Connect(function(snap)

@@ -1,7 +1,7 @@
 -- ============================================================================
---  Plots (Vaults) — the heart of the game. Owns vault state and every action
---  that touches it: assigning vaults, rolling/placing/selling/fusing Brainrots,
---  accruing Loot, timed locking, ascending, snatch streaks, and SNATCHING.
+--  Plots (Bases) — the heart of the game. Owns base state and every action
+--  that touches it: assigning bases, rolling/placing/selling/fusing Brainrots,
+--  accruing Cash, timed locking, rebirthing, steal streaks, and STEALING.
 --
 --  A pedestal slot holds an entry: { id = string, golden = boolean }.
 -- ============================================================================
@@ -19,7 +19,7 @@ local Plots = {}
 local world: { any } = {}
 local state: { any } = {}
 local playerPlot: { [Player]: number } = {}
--- Snatch streaks: streak[player] = { count: number, expire: number }
+-- Steal streaks: streak[player] = { count: number, expire: number }
 local streak: { [Player]: { count: number, expire: number } } = {}
 
 -- Injected by Main.
@@ -34,7 +34,7 @@ function Plots.plotIndexOf(player: Player): number?
 	return playerPlot[player]
 end
 
--- The Loot/sec a single pedestal entry produces (before player multipliers).
+-- The Cash/sec a single pedestal entry produces (before player multipliers).
 local function slotIncome(entry): number
 	local def = Brainrots.get(entry.id)
 	if not def then
@@ -136,7 +136,7 @@ local function makeUnit(def, podium: BasePart, locked: boolean, golden: boolean)
 	incomeLabel.Parent = tag
 
 	local prompt = Instance.new("ProximityPrompt")
-	prompt.ActionText = "Snatch"
+	prompt.ActionText = "Steal"
 	prompt.ObjectText = nameLabel.Text
 	prompt.HoldDuration = Config.StealHoldSeconds
 	prompt.MaxActivationDistance = Config.StealRange
@@ -223,8 +223,8 @@ function Plots.placeCreature(player: Player, id: string, golden: boolean?): bool
 	return true
 end
 
--- Snatch streak -------------------------------------------------------------
-function Plots.registerSnatch(player: Player)
+-- Steal streak -------------------------------------------------------------
+function Plots.registerSteal(player: Player)
 	local now = os.clock()
 	local st = streak[player]
 	if not st or now > st.expire then
@@ -252,7 +252,7 @@ function Plots.streakRemaining(player: Player): number
 end
 
 function Plots.streakMultiplier(player: Player): number
-	return 1 + Plots.streakCount(player) * Config.Streak.bonusPerSnatch
+	return 1 + Plots.streakCount(player) * Config.Streak.bonusPerSteal
 end
 
 -- Returns true if an active streak was actually broken (for a notification).
@@ -307,7 +307,7 @@ function Plots.rollCost(player: Player): number
 	return math.floor(Config.BaseRollCost * Config.RollCostGrowth ^ filled)
 end
 
--- A snapshot of the player's Brainrots for the client's Vault panel.
+-- A snapshot of the player's Brainrots for the client's Base panel.
 function Plots.creaturesList(player: Player)
 	local index = playerPlot[player]
 	if not index then
@@ -451,10 +451,10 @@ end
 function Plots.roll(player: Player): (boolean, any, string?)
 	local index = playerPlot[player]
 	if not index then
-		return false, nil, "No vault"
+		return false, nil, "No base"
 	end
 	if not firstFreeSlot(index) then
-		return false, nil, "Your vault is full"
+		return false, nil, "Your base is full"
 	end
 	local data = Data.get(player)
 	if not data then
@@ -462,7 +462,7 @@ function Plots.roll(player: Player): (boolean, any, string?)
 	end
 	local cost = Plots.rollCost(player)
 	if data.cash < cost then
-		return false, nil, "Not enough Loot"
+		return false, nil, "Not enough Cash"
 	end
 	data.cash -= cost
 	local def = Brainrots.roll(nil)
@@ -478,7 +478,7 @@ function Plots.luckyRoll(player: Player)
 		if data then
 			data.cash += Config.LuckyRollFullFallbackCash
 		end
-		notify(player, "Vault full — got $" .. Config.LuckyRollFullFallbackCash .. " instead!", GOLD)
+		notify(player, "Base full — got $" .. Config.LuckyRollFullFallbackCash .. " instead!", GOLD)
 		return nil
 	end
 	local def = Brainrots.roll(Brainrots.HighRarities)
@@ -486,7 +486,7 @@ function Plots.luckyRoll(player: Player)
 	return def
 end
 
--- Ascension (rebirth) -------------------------------------------------------
+-- Rebirth (rebirth) -------------------------------------------------------
 function Plots.rebirthCost(player: Player): number
 	local data = Data.get(player)
 	local rebirths = (data and data.rebirths) or 0
@@ -521,7 +521,7 @@ function Plots.rebirth(player: Player): number?
 	return data.rebirths
 end
 
--- Snatching (steal) ---------------------------------------------------------
+-- Stealing (steal) ---------------------------------------------------------
 function Plots.handleSteal(thief: Player, victimIndex: number, slot: number)
 	local vs = state[victimIndex]
 	if not vs or not vs.owner then
@@ -532,7 +532,7 @@ function Plots.handleSteal(thief: Player, victimIndex: number, slot: number)
 		return
 	end
 	if Plots.isLocked(victimIndex) then
-		notify(thief, victim.Name .. "'s vault is LOCKED!", Color3.fromRGB(230, 90, 90))
+		notify(thief, victim.Name .. "'s base is LOCKED!", Color3.fromRGB(230, 90, 90))
 		return
 	end
 	local entry = vs.slots[slot]
@@ -546,7 +546,7 @@ function Plots.handleSteal(thief: Player, victimIndex: number, slot: number)
 	end
 	local freeSlot = firstFreeSlot(thiefIndex)
 	if not freeSlot then
-		notify(thief, "Your vault is full — sell, fuse or ascend first!", Color3.fromRGB(230, 90, 90))
+		notify(thief, "Your base is full — sell, fuse or rebirth first!", Color3.fromRGB(230, 90, 90))
 		return
 	end
 
@@ -555,17 +555,17 @@ function Plots.handleSteal(thief: Player, victimIndex: number, slot: number)
 	removeFromSlot(victimIndex, slot)
 	placeOnSlot(thiefIndex, freeSlot, entry.id, golden)
 
-	Plots.registerSnatch(thief)
+	Plots.registerSteal(thief)
 
 	local name = ((golden and "✨ Golden " or "") .. (def and def.name or "a Brainrot"))
 	local color = def and Brainrots.rarityColor(def.rarity) or nil
 	local streakN = Plots.streakCount(thief)
-	local thiefMsg = "You snatched " .. name .. " from " .. victim.Name .. "!"
+	local thiefMsg = "You stole " .. name .. " from " .. victim.Name .. "!"
 	if streakN > 1 then
 		thiefMsg = thiefMsg .. "  🔥x" .. streakN
 	end
 	notify(thief, thiefMsg, color)
-	notify(victim, thief.Name .. " snatched your " .. name .. "!", Color3.fromRGB(230, 90, 90))
+	notify(victim, thief.Name .. " stole your " .. name .. "!", Color3.fromRGB(230, 90, 90))
 
 	Plots.updateSign(victimIndex)
 	Plots.updateSign(thiefIndex)
@@ -580,7 +580,7 @@ function Plots.lockBase(player: Player)
 		return
 	end
 	if Monetization.owns(player, "BaseLock") then
-		notify(player, "Your vault is already permanently locked!", Color3.fromRGB(90, 150, 255))
+		notify(player, "Your base is already permanently locked!", Color3.fromRGB(90, 150, 255))
 		return
 	end
 	local s = state[index]
@@ -588,7 +588,7 @@ function Plots.lockBase(player: Player)
 	s.lockedApplied = true
 	applyLockToPrompts(index)
 	Plots.updateSign(index)
-	notify(player, ("Vault LOCKED for %ds!"):format(Config.LockDuration), Color3.fromRGB(90, 150, 255))
+	notify(player, ("Base LOCKED for %ds!"):format(Config.LockDuration), Color3.fromRGB(90, 150, 255))
 	syncPlayer(player)
 end
 
@@ -600,7 +600,7 @@ function Plots.updateLocks()
 				s.lockedApplied = locked
 				applyLockToPrompts(index)
 				if not locked then
-					notify(s.owner, "Your vault is UNLOCKED — re-lock it!", Color3.fromRGB(230, 90, 90))
+					notify(s.owner, "Your base is UNLOCKED — re-lock it!", Color3.fromRGB(230, 90, 90))
 				end
 				syncPlayer(s.owner)
 			end
@@ -626,7 +626,7 @@ function Plots.updateSign(index: number)
 	if s.owner then
 		local data = Data.get(s.owner)
 		local tier = (data and data.rebirths) or 0
-		w.ownerLabel.Text = s.owner.Name .. "'s Vault" .. (tier > 0 and (" ⭐" .. tier) or "")
+		w.ownerLabel.Text = s.owner.Name .. "'s Base" .. (tier > 0 and (" ⭐" .. tier) or "")
 
 		local income = Plots.baseIncome(index) * Plots.totalMultiplier(s.owner)
 		local lockText, padText
@@ -647,7 +647,7 @@ function Plots.updateSign(index: number)
 			w.lockPadLabel.Text = padText
 		end
 	else
-		w.ownerLabel.Text = "Empty Vault"
+		w.ownerLabel.Text = "Empty Base"
 		w.statsLabel.Text = ""
 		if w.lockPadLabel then
 			w.lockPadLabel.Text = "LOCK VAULT"

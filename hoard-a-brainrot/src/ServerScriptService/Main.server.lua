@@ -100,10 +100,10 @@ end
 
 Plots.wire(notify, pushSync)
 
--- A mallet hit breaks the victim's snatch streak.
+-- A sword hit breaks the victim's steal streak.
 Combat.setOnHit(function(victim)
 	if Plots.resetStreak(victim) then
-		notify(victim, "Bonked! Snatch streak lost 💢", Color3.fromRGB(230, 90, 90))
+		notify(victim, "Hit! Steal streak lost 💢", Color3.fromRGB(230, 90, 90))
 		pushSync(victim)
 	end
 end)
@@ -113,7 +113,7 @@ local function onProduct(player: Player, key: string, data): boolean
 	local product = Config.Products[key]
 	if product and product.cash then
 		data.cash += product.cash
-		notify(player, "+$" .. product.cash .. " Loot!", Color3.fromRGB(80, 200, 120))
+		notify(player, "+$" .. product.cash .. " Cash!", Color3.fromRGB(80, 200, 120))
 	elseif key == "LuckyRoll" then
 		local def = Plots.luckyRoll(player)
 		if def then
@@ -181,7 +181,7 @@ SellEvent.OnServerEvent:Connect(function(player, slot)
 	end
 	local value = Plots.sell(player, slot)
 	if value > 0 then
-		notify(player, "Sold for $" .. value .. " Loot", Color3.fromRGB(80, 200, 120))
+		notify(player, "Sold for $" .. value .. " Cash", Color3.fromRGB(80, 200, 120))
 	end
 	pushSync(player)
 end)
@@ -189,7 +189,7 @@ end)
 SellCommonsEvent.OnServerEvent:Connect(function(player)
 	local value = Plots.sellCommons(player)
 	if value > 0 then
-		notify(player, "Sold all Commons for $" .. value .. " Loot", Color3.fromRGB(80, 200, 120))
+		notify(player, "Sold all Commons for $" .. value .. " Cash", Color3.fromRGB(80, 200, 120))
 	else
 		notify(player, "No Commons to sell", Color3.fromRGB(230, 90, 90))
 	end
@@ -228,12 +228,12 @@ RebirthEvent.OnServerEvent:Connect(function(player)
 		if rebirthValue then
 			(rebirthValue :: IntValue).Value = newCount
 		end
-		notify(player, ("⭐ ASCENDED to Tier %d! (+%d%% income forever)"):format(
+		notify(player, ("⭐ REBIRTH! You're now Rebirth %d (+%d%% income forever)"):format(
 			newCount,
 			math.floor(newCount * Config.Rebirth.multiplierPerRebirth * 100)
 		), Color3.fromRGB(255, 205, 70))
 	else
-		notify(player, "Not enough Loot to ascend yet!", Color3.fromRGB(230, 90, 90))
+		notify(player, "Not enough Cash to rebirth yet!", Color3.fromRGB(230, 90, 90))
 	end
 	pushSync(player)
 end)
@@ -274,7 +274,7 @@ local function onJoin(player: Player)
 end
 
 local function onLeave(player: Player)
-	Plots.release(player) -- banks uncollected + writes creatures into data, clears vault
+	Plots.release(player) -- banks uncollected + writes creatures into data, clears base
 	local data = Data.get(player)
 	if data then
 		Leaderboard.update(player, data.cash)
@@ -330,7 +330,7 @@ task.spawn(function()
 	while true do
 		task.wait(60)
 		for _, player in Players:GetPlayers() do
-			Plots.snapshotToData(player) -- keep loot + creatures current, don't clear the vault
+			Plots.snapshotToData(player) -- keep loot + creatures current, don't clear the base
 			Data.save(player)
 		end
 	end

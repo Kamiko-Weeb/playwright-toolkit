@@ -110,7 +110,7 @@ local function buildPlot(index: number, originX: number, parent: Instance)
 	ownerLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
 	ownerLabel.TextStrokeTransparency = 0.4
 	ownerLabel.TextScaled = true
-	ownerLabel.Text = "Empty Vault"
+	ownerLabel.Text = "Empty Base"
 	ownerLabel.Parent = sign
 
 	local statsLabel = Instance.new("TextLabel")

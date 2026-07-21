@@ -15,9 +15,9 @@ local canSave: { [Player]: boolean } = {}
 
 local function defaultData()
 	return {
-		cash = Config.StartingCash, -- "Loot" (kept as `cash` internally)
-		rebirths = 0, -- ascension tier
-		creatures = {}, -- array of { id = string, golden = boolean } on the Vault
+		cash = Config.StartingCash, -- "Cash" (kept as `cash` internally)
+		rebirths = 0, -- rebirth tier
+		creatures = {}, -- array of { id = string, golden = boolean } on the Base
 		purchaseHistory = {}, -- [PurchaseId] = true, blocks double-granting products
 	}
 end
