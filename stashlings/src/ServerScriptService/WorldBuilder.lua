@@ -84,7 +84,7 @@ local function buildPlot(index: number, originX: number, parent: Instance)
 
 	-- Collect (left) and Lock (right) pads at the front of the base.
 	local collectPad = makePad("CollectPad", -8, Color3.fromRGB(80, 200, 120), "COLLECT")
-	local lockPad = makePad("LockPad", 8, Color3.fromRGB(90, 150, 255), "LOCK BASE")
+	local lockPad = makePad("LockPad", 8, Color3.fromRGB(90, 150, 255), "LOCK VAULT")
 	local lockPadLabel = lockPad:FindFirstChildOfClass("BillboardGui"):FindFirstChild("Label") :: TextLabel
 
 	-- Owner sign on a pole at the back
@@ -110,7 +110,7 @@ local function buildPlot(index: number, originX: number, parent: Instance)
 	ownerLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
 	ownerLabel.TextStrokeTransparency = 0.4
 	ownerLabel.TextScaled = true
-	ownerLabel.Text = "Empty Base"
+	ownerLabel.Text = "Empty Vault"
 	ownerLabel.Parent = sign
 
 	local statsLabel = Instance.new("TextLabel")

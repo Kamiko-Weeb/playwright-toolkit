@@ -6,7 +6,7 @@ local DataStoreService = game:GetService("DataStoreService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Config = require(ReplicatedStorage.Shared.Config)
 
-local store = DataStoreService:GetDataStore("StealBrainrot_PlayerData_v1")
+local store = DataStoreService:GetDataStore("Stashlings_PlayerData_v1")
 
 local Data = {}
 
@@ -15,8 +15,9 @@ local canSave: { [Player]: boolean } = {}
 
 local function defaultData()
 	return {
-		cash = Config.StartingCash,
-		brainrots = {}, -- array of brainrot ids currently on the player's base
+		cash = Config.StartingCash, -- "Loot" (kept as `cash` internally)
+		rebirths = 0, -- ascension tier
+		creatures = {}, -- array of { id = string, golden = boolean } on the Vault
 		purchaseHistory = {}, -- [PurchaseId] = true, blocks double-granting products
 	}
 end
@@ -43,7 +44,8 @@ function Data.load(player: Player)
 		local d = result or defaultData()
 		local def = defaultData()
 		d.cash = d.cash or def.cash
-		d.brainrots = d.brainrots or {}
+		d.rebirths = d.rebirths or 0
+		d.creatures = d.creatures or {}
 		d.purchaseHistory = d.purchaseHistory or {}
 		cache[player] = d
 		canSave[player] = true

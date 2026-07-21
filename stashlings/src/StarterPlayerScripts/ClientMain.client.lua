@@ -1,7 +1,7 @@
 -- ============================================================================
 --  ClientMain — builds the whole UI in code (no assets) and runs the client
---  loop: predicts cash between syncs, rolls, collects, opens the store, and
---  shows toast notifications (rolls, steals, purchases).
+--  loop: predicts Loot between syncs; rolls (with a slot-machine reveal);
+--  collects; manages the Vault (sell / fuse); ascends; store; toasts.
 -- ============================================================================
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -11,6 +11,7 @@ local TweenService = game:GetService("TweenService")
 
 local Config = require(ReplicatedStorage.Shared.Config)
 local Format = require(ReplicatedStorage.Shared.Format)
+local Stashlings = require(ReplicatedStorage.Shared.Stashlings)
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
@@ -18,7 +19,11 @@ local playerGui = player:WaitForChild("PlayerGui")
 local Remotes = ReplicatedStorage:WaitForChild("Remotes")
 local SyncEvent = Remotes:WaitForChild("Sync") :: RemoteEvent
 local RollEvent = Remotes:WaitForChild("Roll") :: RemoteEvent
+local RollResultEvent = Remotes:WaitForChild("RollResult") :: RemoteEvent
 local CollectEvent = Remotes:WaitForChild("Collect") :: RemoteEvent
+local SellEvent = Remotes:WaitForChild("Sell") :: RemoteEvent
+local SellCommonsEvent = Remotes:WaitForChild("SellCommons") :: RemoteEvent
+local FuseEvent = Remotes:WaitForChild("Fuse") :: RemoteEvent
 local RebirthEvent = Remotes:WaitForChild("Rebirth") :: RemoteEvent
 local NotifyEvent = Remotes:WaitForChild("Notify") :: RemoteEvent
 local ReadyEvent = Remotes:WaitForChild("Ready") :: RemoteEvent
@@ -68,8 +73,13 @@ local function pad(px: number)
 	})
 end
 
+-- Latest authoritative snapshot + predicted Loot. Declared up here so every
+-- UI closure (e.g. rebuildVault) captures the same upvalue.
+local snapshot: any = nil
+local displayCash = 0
+
 local gui = create("ScreenGui", {
-	Name = "StealBrainrotUI",
+	Name = "StashlingsUI",
 	ResetOnSpawn = false,
 	ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
 	IgnoreGuiInset = true,
@@ -78,7 +88,7 @@ local gui = create("ScreenGui", {
 
 -- Top bar --------------------------------------------------------------------
 local topBar = create("Frame", {
-	Size = UDim2.new(0, 340, 0, 104),
+	Size = UDim2.new(0, 340, 0, 126),
 	Position = UDim2.new(0.5, 0, 0, 12),
 	AnchorPoint = Vector2.new(0.5, 0),
 	BackgroundColor3 = COLORS.panel,
@@ -93,7 +103,7 @@ local cashLabel = create("TextLabel", {
 	Font = Enum.Font.GothamBold,
 	TextColor3 = COLORS.gold,
 	TextScaled = true,
-	Text = "0 Cash",
+	Text = "0 Loot",
 	Parent = topBar,
 })
 
@@ -116,6 +126,17 @@ local lockLabel = create("TextLabel", {
 	TextColor3 = COLORS.subtext,
 	TextScaled = true,
 	Text = "🔓 Unlocked — step on your LOCK pad",
+	Parent = topBar,
+})
+
+local streakLabel = create("TextLabel", {
+	Size = UDim2.new(1, -20, 0, 22),
+	Position = UDim2.new(0, 10, 0, 98),
+	BackgroundTransparency = 1,
+	Font = Enum.Font.GothamBold,
+	TextColor3 = Color3.fromRGB(255, 140, 60),
+	TextScaled = true,
+	Text = "",
 	Parent = topBar,
 })
 
@@ -145,11 +166,11 @@ local collectButton = create("TextButton", {
 	Parent = gui,
 }, { corner(14), pad(8) })
 
--- Side buttons ---------------------------------------------------------------
+-- Side buttons (group vertically centered) ------------------------------------
 local function sideButton(text: string, order: number, color: Color3): TextButton
 	return create("TextButton", {
 		Size = UDim2.new(0, 120, 0, 52),
-		Position = UDim2.new(0, 16, 0.5, (order - 1) * 62),
+		Position = UDim2.new(0, 16, 0.5, (order - 2.5) * 60),
 		AnchorPoint = Vector2.new(0, 0.5),
 		BackgroundColor3 = color,
 		Font = Enum.Font.GothamBold,
@@ -160,8 +181,9 @@ local function sideButton(text: string, order: number, color: Color3): TextButto
 	}, { corner(12), pad(10) })
 end
 local storeSideBtn = sideButton("Store", 1, COLORS.robux)
-local topSideBtn = sideButton("Top 10", 2, COLORS.panel)
-local rebirthSideBtn = sideButton("Rebirth", 3, COLORS.gold)
+local vaultSideBtn = sideButton("Vault", 2, COLORS.accent)
+local topSideBtn = sideButton("Top 10", 3, COLORS.panel)
+local ascendSideBtn = sideButton("Ascend", 4, COLORS.gold)
 
 -- Panels ---------------------------------------------------------------------
 local openPanel: Frame? = nil
@@ -280,7 +302,7 @@ end
 for _, key in Config.ProductOrder do
 	storeOrder += 1
 	local productInfo = Config.Products[key]
-	local subtitle = productInfo.desc or "Instant cash"
+	local subtitle = productInfo.desc or "Instant Loot"
 	storeRow(storeOrder, productInfo.name, subtitle, function()
 		if productInfo.id ~= 0 then
 			MarketplaceService:PromptProductPurchase(player, productInfo.id)
@@ -289,6 +311,113 @@ for _, key in Config.ProductOrder do
 		end
 	end)
 end
+
+-- Vault (manage: sell / fuse) ------------------------------------------------
+local vaultPanel, vaultScroll = makePanel("Your Vault")
+
+local function rebuildVault()
+	if not vaultPanel.Visible then
+		return
+	end
+	for _, child in vaultScroll:GetChildren() do
+		if not child:IsA("UIListLayout") then
+			child:Destroy()
+		end
+	end
+	local creatures = (snapshot and snapshot.creatures) or {}
+
+	-- Sell all commons
+	local sellAll = create("TextButton", {
+		Size = UDim2.new(1, 0, 0, 48),
+		BackgroundColor3 = COLORS.green,
+		Font = Enum.Font.GothamBold,
+		TextColor3 = COLORS.text,
+		TextScaled = true,
+		Text = "Sell All Commons",
+		LayoutOrder = 0,
+		Parent = vaultScroll,
+	}, { corner(10), pad(8) })
+	sellAll.Activated:Connect(function()
+		SellCommonsEvent:FireServer()
+	end)
+
+	-- Fuse candidates (3+ identical, non-golden)
+	local counts: { [string]: { count: number, name: string } } = {}
+	for _, c in creatures do
+		if not c.golden then
+			local e = counts[c.id] or { count = 0, name = c.name }
+			e.count += 1
+			counts[c.id] = e
+		end
+	end
+	local order = 1
+	for id, e in counts do
+		if e.count >= Config.Fusion.count then
+			order += 1
+			local fuseBtn = create("TextButton", {
+				Size = UDim2.new(1, 0, 0, 44),
+				BackgroundColor3 = COLORS.gold,
+				Font = Enum.Font.GothamBold,
+				TextColor3 = Color3.fromRGB(60, 45, 0),
+				TextScaled = true,
+				Text = ("✨ Fuse %dx %s → Golden"):format(Config.Fusion.count, e.name),
+				LayoutOrder = order,
+				Parent = vaultScroll,
+			}, { corner(10), pad(6) })
+			fuseBtn.Activated:Connect(function()
+				FuseEvent:FireServer(id)
+			end)
+		end
+	end
+
+	-- Per-Stashling rows with a Sell button
+	for _, c in creatures do
+		order += 1
+		local rarityColor = Stashlings.rarityColor(c.rarity)
+		local row = create("Frame", {
+			Size = UDim2.new(1, 0, 0, 56),
+			BackgroundColor3 = COLORS.row,
+			LayoutOrder = order,
+			Parent = vaultScroll,
+		}, { corner(10), pad(8) })
+		create("TextLabel", {
+			Size = UDim2.new(1, -110, 1, 0),
+			BackgroundTransparency = 1,
+			Font = Enum.Font.GothamMedium,
+			TextColor3 = c.golden and COLORS.gold or rarityColor,
+			TextScaled = true,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			Text = ("%s%s\n%s • $%s/s"):format(
+				c.golden and "✨ Golden " or "",
+				c.name,
+				c.rarity,
+				Format.abbreviate(c.income)
+			),
+			Parent = row,
+		})
+		local sellValue = math.floor(c.income * Config.SellMultiplier)
+		local sellBtn = create("TextButton", {
+			Size = UDim2.new(0, 92, 0, 40),
+			Position = UDim2.new(1, -92, 0.5, 0),
+			AnchorPoint = Vector2.new(0, 0.5),
+			BackgroundColor3 = COLORS.green,
+			Font = Enum.Font.GothamBold,
+			TextColor3 = COLORS.text,
+			TextScaled = true,
+			Text = "Sell $" .. Format.abbreviate(sellValue),
+			Parent = row,
+		}, { corner(8), pad(5) })
+		local slot = c.slot
+		sellBtn.Activated:Connect(function()
+			SellEvent:FireServer(slot)
+		end)
+	end
+end
+
+vaultSideBtn.Activated:Connect(function()
+	togglePanel(vaultPanel)
+	rebuildVault()
+end)
 
 -- Top 10 ---------------------------------------------------------------------
 local topPanel, topScroll = makePanel("Top 10 Richest")
@@ -331,19 +460,19 @@ topSideBtn.Activated:Connect(function()
 	end
 end)
 
--- Rebirth --------------------------------------------------------------------
-local rebirthPanel, rebirthScroll = makePanel("Rebirth")
-rebirthSideBtn.Activated:Connect(function()
-	togglePanel(rebirthPanel)
+-- Ascend (rebirth) -----------------------------------------------------------
+local ascendPanel, ascendScroll = makePanel("Ascend")
+ascendSideBtn.Activated:Connect(function()
+	togglePanel(ascendPanel)
 end)
 
-local rebirthInfoFrame = create("Frame", {
+local ascendInfoFrame = create("Frame", {
 	Size = UDim2.new(1, 0, 0, 150),
 	BackgroundColor3 = COLORS.row,
 	LayoutOrder = 1,
-	Parent = rebirthScroll,
+	Parent = ascendScroll,
 }, { corner(12), pad(12) })
-local rebirthInfo = create("TextLabel", {
+local ascendInfo = create("TextLabel", {
 	Size = UDim2.new(1, 0, 1, 0),
 	BackgroundTransparency = 1,
 	Font = Enum.Font.GothamMedium,
@@ -351,22 +480,22 @@ local rebirthInfo = create("TextLabel", {
 	TextScaled = true,
 	TextXAlignment = Enum.TextXAlignment.Left,
 	TextYAlignment = Enum.TextYAlignment.Top,
-	Text = "Rebirth resets your cash and brainrots for a permanent income boost.",
+	Text = "Ascending resets your Loot and Stashlings for a permanent income boost.",
 	TextWrapped = true,
-	Parent = rebirthInfoFrame,
+	Parent = ascendInfoFrame,
 })
 
-local rebirthConfirm = create("TextButton", {
+local ascendConfirm = create("TextButton", {
 	Size = UDim2.new(1, 0, 0, 64),
 	BackgroundColor3 = COLORS.gold,
 	Font = Enum.Font.GothamBold,
 	TextColor3 = Color3.fromRGB(60, 45, 0),
 	TextScaled = true,
-	Text = "REBIRTH",
+	Text = "ASCEND",
 	LayoutOrder = 2,
-	Parent = rebirthScroll,
+	Parent = ascendScroll,
 }, { corner(12), pad(10) })
-rebirthConfirm.Activated:Connect(function()
+ascendConfirm.Activated:Connect(function()
 	RebirthEvent:FireServer()
 end)
 
@@ -418,10 +547,98 @@ NotifyEvent.OnClientEvent:Connect(function(text, color)
 	showToast(text, color or COLORS.text)
 end)
 
--- Sync + prediction ----------------------------------------------------------
-local snapshot: any = nil
-local displayCash = 0
+-- Roll reveal (slot-machine) -------------------------------------------------
+local revealOverlay = create("Frame", {
+	Size = UDim2.new(1, 0, 1, 0),
+	BackgroundColor3 = Color3.fromRGB(0, 0, 0),
+	BackgroundTransparency = 0.45,
+	Visible = false,
+	ZIndex = 50,
+	Parent = gui,
+})
+local revealCard = create("Frame", {
+	Size = UDim2.new(0, 380, 0, 200),
+	Position = UDim2.new(0.5, 0, 0.5, 0),
+	AnchorPoint = Vector2.new(0.5, 0.5),
+	BackgroundColor3 = COLORS.bg,
+	ZIndex = 51,
+	Parent = revealOverlay,
+}, { corner(18) })
+local revealStroke = create("UIStroke", { Thickness = 4, Color = COLORS.text, Parent = revealCard })
+local revealName = create("TextLabel", {
+	Size = UDim2.new(1, -20, 0, 90),
+	Position = UDim2.new(0, 10, 0, 30),
+	BackgroundTransparency = 1,
+	Font = Enum.Font.GothamBlack,
+	TextColor3 = COLORS.text,
+	TextScaled = true,
+	Text = "?",
+	ZIndex = 52,
+	Parent = revealCard,
+})
+local revealRarity = create("TextLabel", {
+	Size = UDim2.new(1, -20, 0, 40),
+	Position = UDim2.new(0, 10, 0, 130),
+	BackgroundTransparency = 1,
+	Font = Enum.Font.GothamBold,
+	TextColor3 = COLORS.subtext,
+	TextScaled = true,
+	Text = "",
+	ZIndex = 52,
+	Parent = revealCard,
+})
 
+local revealActive = false
+local function playReveal(result)
+	-- result = { name, rarity, lucky }
+	if revealActive then
+		-- Overlapping roll: skip the animation but still give feedback.
+		showToast(("Got %s (%s)!"):format(result.name, result.rarity), Stashlings.rarityColor(result.rarity))
+		return
+	end
+	revealActive = true
+	revealOverlay.Visible = true
+
+	task.spawn(function()
+		local n = #Stashlings.List
+		for i = 1, 15 do
+			local fake = Stashlings.List[math.random(1, n)]
+			revealName.Text = fake.name
+			revealName.TextColor3 = Stashlings.rarityColor(fake.rarity)
+			revealRarity.Text = fake.rarity
+			revealStroke.Color = Stashlings.rarityColor(fake.rarity)
+			task.wait(0.04 + i * 0.007) -- decelerate
+		end
+
+		local color = Stashlings.rarityColor(result.rarity)
+		revealName.Text = (result.lucky and "✨ " or "") .. result.name
+		revealName.TextColor3 = color
+		revealRarity.Text = result.rarity .. (result.lucky and "  —  LUCKY!" or "")
+		revealStroke.Color = color
+
+		-- pop
+		revealCard.Size = UDim2.new(0, 340, 0, 180)
+		TweenService:Create(revealCard, TweenInfo.new(0.18, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+			Size = UDim2.new(0, 380, 0, 200),
+		}):Play()
+
+		task.wait(1.15)
+		local fade = TweenService:Create(revealOverlay, TweenInfo.new(0.3), { BackgroundTransparency = 1 })
+		fade:Play()
+		fade.Completed:Wait()
+		revealOverlay.Visible = false
+		revealOverlay.BackgroundTransparency = 0.45
+		revealActive = false
+	end)
+end
+
+RollResultEvent.OnClientEvent:Connect(function(result)
+	if result and result.name then
+		playReveal(result)
+	end
+end)
+
+-- Sync + prediction ----------------------------------------------------------
 local function refresh()
 	if not snapshot then
 		return
@@ -445,31 +662,44 @@ local function refresh()
 
 	-- Lock status
 	if snapshot.lockPermanent then
-		lockLabel.Text = "🔒 Locked (Base Lock pass)"
+		lockLabel.Text = "🔒 Vault Locked (pass)"
 		lockLabel.TextColor3 = COLORS.accent
 	elseif snapshot.locked then
-		lockLabel.Text = ("🔒 Locked — %ds left"):format(snapshot.lockRemaining)
+		lockLabel.Text = ("🔒 Vault Locked — %ds left"):format(snapshot.lockRemaining)
 		lockLabel.TextColor3 = COLORS.accent
 	else
 		lockLabel.Text = "🔓 Unlocked — step on your LOCK pad"
 		lockLabel.TextColor3 = COLORS.subtext
 	end
 
-	-- Rebirth panel
+	-- Snatch streak
+	if snapshot.streakCount and snapshot.streakCount > 0 then
+		streakLabel.Text = ("🔥 Snatch Streak x%d (+%d%%)  %ds"):format(
+			snapshot.streakCount,
+			math.floor((snapshot.streakMultiplier - 1) * 100),
+			snapshot.streakRemaining
+		)
+	else
+		streakLabel.Text = ""
+	end
+
+	-- Ascend panel
 	local nextMult = snapshot.rebirthMultiplier + Config.Rebirth.multiplierPerRebirth
-	rebirthInfo.Text = ("Rebirths: %d   (x%.2f income)\n\nNext rebirth costs $%s and raises you to x%.2f income.\n\nResets your cash & brainrots."):format(
+	ascendInfo.Text = ("Tier: %d   (x%.2f income)\n\nNext ascension costs $%s and raises you to x%.2f income.\n\nResets your Loot & Stashlings."):format(
 		snapshot.rebirths,
 		snapshot.rebirthMultiplier,
 		Format.abbreviate(snapshot.rebirthCost),
 		nextMult
 	)
 	if snapshot.canRebirth then
-		rebirthConfirm.Text = "REBIRTH NOW"
-		rebirthConfirm.BackgroundColor3 = COLORS.gold
+		ascendConfirm.Text = "ASCEND NOW"
+		ascendConfirm.BackgroundColor3 = COLORS.gold
 	else
-		rebirthConfirm.Text = ("Need $%s"):format(Format.abbreviate(snapshot.rebirthCost))
-		rebirthConfirm.BackgroundColor3 = COLORS.row
+		ascendConfirm.Text = ("Need $%s"):format(Format.abbreviate(snapshot.rebirthCost))
+		ascendConfirm.BackgroundColor3 = COLORS.row
 	end
+
+	rebuildVault()
 end
 
 SyncEvent.OnClientEvent:Connect(function(snap)

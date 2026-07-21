@@ -1,6 +1,6 @@
 -- ============================================================================
---  CombatClient — click / tap (or the ATTACK button on mobile) to swing your
---  sword. Purely a request to the server, which decides who actually gets hit.
+--  CombatClient — click / tap (or the BONK button on mobile) to swing your
+--  mallet. Purely a request to the server, which decides who actually gets hit.
 -- ============================================================================
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -52,7 +52,7 @@ attackButton.BackgroundColor3 = Color3.fromRGB(230, 90, 90)
 attackButton.Font = Enum.Font.GothamBlack
 attackButton.TextColor3 = Color3.fromRGB(255, 255, 255)
 attackButton.TextScaled = true
-attackButton.Text = "⚔️"
+attackButton.Text = "🔨"
 attackButton.Parent = gui
 
 local uiCorner = Instance.new("UICorner")
