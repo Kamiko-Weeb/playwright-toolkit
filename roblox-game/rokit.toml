@@ -1,0 +1,5 @@
+# Toolchain pin for this project. Install Rokit (https://github.com/rojo-rbx/rokit),
+# then run `rokit install` in this folder to get the exact Rojo version below.
+# Prefer Aftman or Foreman? The same [tools] table works for them too.
+[tools]
+rojo = "rojo-rbx/rojo@7.4.4"
